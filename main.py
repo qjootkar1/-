@@ -53,7 +53,6 @@ async def analyze(q: str = Query(...)):
         if q.lower() in txt.lower() or any(w in txt for w in ['제품', '사용', '구매', '리뷰']):
             valid_reviews.append(txt)
             
-            # 장단점 분석 키워드 (범용)
             pro_map = ["가성비", "음질", "만족", "추천", "빠름", "편함", "혁신", "견고", "깔끔", "정확", "튼튼"]
             con_map = ["비쌈", "느림", "무겁", "발열", "소음", "불량", "끊김", "싱크", "단점", "최악", "고장", "베젤", "진동", "이슈"]
             feat_map = ["배터리", "디스플레이", "카메라", "성능", "무게", "사이즈", "노캔", "연동성", "충전", "방수", "디자인"]
@@ -66,7 +65,7 @@ async def analyze(q: str = Query(...)):
             for w in con_map:
                 if w in txt:
                     analysis["cons"].append(txt[:75] + "...")
-                    score -= 4.5 # 쇼핑 방지기이므로 감점 가중치 강화
+                    score -= 4.5 
                     break
             for w in feat_map:
                 if w in txt: analysis["features"].append(w)
