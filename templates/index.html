@@ -7,7 +7,7 @@
     <script src="https://cdn.jsdelivr.net/npm/vue@2"></script>
     <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
     <style>
-        body { font-family: 'Pretendard', sans-serif; background: #f8fafc; padding: 20px; color: #334155; line-height: 1.6; }
+        body { font-family: sans-serif; background: #f8fafc; padding: 20px; color: #334155; }
         .box { max-width: 800px; margin: 0 auto; background: white; padding: 30px; border-radius: 24px; box-shadow: 0 10px 40px rgba(0,0,0,0.08); }
         .score-box { background: linear-gradient(135deg, #1a73e8, #0d47a1); color: white; padding: 35px; border-radius: 20px; text-align: center; margin-bottom: 30px; }
         .score-num { font-size: 4.5rem; font-weight: 900; }
@@ -16,20 +16,18 @@
         .bad { border-top: 6px solid #ef4444; background: #fef2f2; }
         .good { border-top: 6px solid #22c55e; background: #f0fdf4; }
         .input-group { display: flex; gap: 10px; margin-bottom: 35px; }
-        input { flex: 1; padding: 15px; border: 2px solid #e2e8f0; border-radius: 12px; font-size: 1rem; outline: none; }
-        input:focus { border-color: #1a73e8; }
-        button { padding: 15px 30px; background: #1a73e8; color: white; border: none; border-radius: 12px; font-weight: bold; cursor: pointer; transition: 0.3s; }
-        button:disabled { background: #cbd5e1; cursor: not-allowed; }
+        input { flex: 1; padding: 15px; border: 2px solid #e2e8f0; border-radius: 12px; font-size: 1rem; }
+        button { padding: 15px 30px; background: #1a73e8; color: white; border: none; border-radius: 12px; font-weight: bold; cursor: pointer; }
+        button:disabled { background: #cbd5e1; }
         .tag { background: rgba(255,255,255,0.2); padding: 5px 12px; border-radius: 20px; margin: 4px; display: inline-block; font-size: 0.85rem; }
     </style>
 </head>
 <body>
     <div id="app" class="box">
-        <h2 style="text-align: center; color: #1e293b; margin-bottom: 5px;">쇼핑 실패 방지기 🛡️</h2>
-        <p style="text-align: center; color: #64748b; margin-bottom: 30px;">커뮤니티의 거친 목소리를 분석해 점수를 매깁니다.</p>
+        <h2 style="text-align: center; color: #1e293b; margin-bottom: 30px;">쇼핑 실패 방지기 🛡️</h2>
 
         <div class="input-group">
-            <input v-model="query" placeholder="제품명을 입력하세요 (예: S23, 에어팟)" @keyup.enter="analyze">
+            <input v-model="query" placeholder="제품명을 입력하세요" @keyup.enter="analyze">
             <button @click="analyze" :disabled="loading" v-text="loading ? '데이터 수집 중...' : '분석 시작'"></button>
         </div>
 
@@ -58,9 +56,9 @@
             </div>
 
             <div style="margin-top: 40px;">
-                <h4 style="border-bottom: 2px solid #f1f5f9; padding-bottom: 10px; color: #475569;">🔍 분석 소스 원본 ({{ res.reviews.length }}건)</h4>
+                <h4 style="border-bottom: 2px solid #f1f5f9; padding-bottom: 10px; color: #475569;">🔍 분석 소스 원본</h4>
                 <div v-for="(r, i) in res.reviews" style="font-size: 0.85rem; padding: 12px; border-bottom: 1px solid #f8fafc; color: #64748b;">
-                    <span style="font-weight: bold; color: #94a3b8;">{{ i+1 }}.</span> {{ r }}
+                    <strong>{{ i+1 }}.</strong> {{ r }}
                 </div>
             </div>
         </div>
