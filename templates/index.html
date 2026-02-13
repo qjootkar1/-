@@ -1,108 +1,70 @@
 <!DOCTYPE html>
-<html lang="ko">
+<html>
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>쇼핑 실패 방지기 🛡️</title>
     <script src="https://cdn.jsdelivr.net/npm/vue@2"></script>
     <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
     <style>
-        body { font-family: 'Pretendard', sans-serif; background-color: #f0f2f5; margin: 0; padding: 20px; color: #333; }
-        .container { max-width: 800px; margin: 0 auto; background: white; padding: 30px; border-radius: 20px; box-shadow: 0 10px 30px rgba(0,0,0,0.1); }
-        h1 { text-align: center; color: #1a73e8; margin-bottom: 10px; }
-        .search-box { display: flex; gap: 10px; margin: 20px 0; }
-        input { flex: 1; padding: 15px; border: 2px solid #ddd; border-radius: 10px; font-size: 16px; }
-        button { padding: 15px 25px; background: #1a73e8; color: white; border: none; border-radius: 10px; cursor: pointer; font-weight: bold; }
-        
-        /* 분석 결과 디자인 */
-        .score-section { text-align: center; padding: 30px; background: #f8f9fa; border-radius: 15px; margin-bottom: 25px; border: 1px solid #e9ecef; }
-        .score-value { font-size: 4rem; font-weight: 900; color: #1a73e8; margin: 10px 0; }
-        
-        .summary-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 30px; }
-        .card { padding: 20px; border-radius: 15px; background: #fff; border: 1px solid #eee; box-shadow: 0 4px 6px rgba(0,0,0,0.02); }
-        .card h3 { margin-top: 0; font-size: 1.1rem; border-bottom: 2px solid #eee; padding-bottom: 10px; }
-        .pros { border-top: 5px solid #28a745; }
-        .cons { border-top: 5px solid #dc3545; }
-        
-        .tag-container { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
-        .tag { background: #e8f0fe; color: #1967d2; padding: 5px 12px; border-radius: 20px; font-size: 0.85rem; font-weight: 600; }
-        
-        ul { padding-left: 20px; font-size: 0.95rem; line-height: 1.6; }
-        li { margin-bottom: 10px; color: #555; }
-        .loading { text-align: center; font-weight: bold; color: #666; }
+        body { font-family: sans-serif; background: #f4f7f9; padding: 20px; }
+        .box { max-width: 700px; margin: 0 auto; background: white; padding: 25px; border-radius: 15px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
+        .score { font-size: 3rem; color: #007bff; font-weight: bold; text-align: center; margin: 15px 0; }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-top: 20px; }
+        .card { padding: 15px; border-radius: 10px; border: 1px solid #eee; }
+        .bad { border-top: 4px solid #ff4d4f; background: #fff1f0; }
+        .good { border-top: 4px solid #52c41a; background: #f6ffed; }
+        input { width: 70%; padding: 12px; border: 1px solid #ddd; border-radius: 5px; }
+        button { padding: 12px 20px; background: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer; }
     </style>
 </head>
 <body>
-    <div id="app" class="container">
-        <h1>쇼핑 실패 방지기 🛡️</h1>
-        <p style="text-align: center; color: #666;">전 세계 커뮤니티의 날것의 반응을 분석합니다.</p>
-
-        <div class="search-box">
-            <input v-model="query" @keyup.enter="analyzeProduct" placeholder="제품명을 입력하세요 (예: 에어팟 프로 2, S23)">
-            <button @click="analyzeProduct" :disabled="loading">{{ loading ? '분석 중...' : '분석 시작' }}</button>
+    <div id="app" class="box">
+        <h2 style="text-align: center;">쇼핑 실패 방지기 🛡️</h2>
+        <div style="text-align: center;">
+            <input v-model="query" placeholder="제품명을 입력하세요">
+            <button @click="analyze">분석 시작</button>
         </div>
 
-        <div v-if="loading" class="loading">🚀 실시간 데이터를 수집하고 분석하는 중입니다...</div>
+        <div v-if="loading" style="text-align: center; margin: 20px;">데이터 분석 중... ⏳</div>
 
-        <div v-if="result">
-            <div class="score-section">
-                <h3>구매 추천 신뢰 점수</h3>
-                <div class="score-value">{{ result.score }}점</div>
-                <div class="tag-container" style="justify-content: center;">
-                    <span v-for="f in result.summary.features" class="tag">#{{ f }}</span>
+        <div v-if="res">
+            <div class="score">{{ res.score }}점</div>
+            <p style="text-align: center; color: #666;">광고 의심 지수: {{ res.ad_ratio }}%</p>
+            
+            <div class="grid">
+                <div class="card good">
+                    <strong>✅ 장점/특징</strong>
+                    <ul style="font-size: 0.85rem;"><li v-for="p in res.summary.pros">{{ p }}</li></ul>
+                </div>
+                <div class="card bad">
+                    <strong>⚠️ 주요 불만</strong>
+                    <ul style="font-size: 0.85rem;"><li v-for="c in res.summary.cons">{{ c }}</li></ul>
                 </div>
             </div>
 
-            <div class="summary-grid">
-                <div class="card pros">
-                    <h3>✅ 긍정적 특징</h3>
-                    <ul v-if="result.summary.pros.length">
-                        <li v-for="p in result.summary.pros">{{ p }}</li>
-                    </ul>
-                    <p v-else>언급된 명확한 장점이 없습니다.</p>
-                </div>
-                <div class="card cons">
-                    <h3>⚠️ 실사용자 불만</h3>
-                    <ul v-if="result.summary.cons.length">
-                        <li v-for="c in result.summary.cons">{{ c }}</li>
-                    </ul>
-                    <p v-else>뚜렷한 불만 사항이 발견되지 않았습니다.</p>
-                </div>
+            <h4 style="margin-top:25px;">🔍 실시간 리뷰 원본</h4>
+            <div v-for="(r, i) in res.reviews" style="font-size: 0.8rem; margin-bottom: 8px; color: #555;">
+                {{ i+1 }}. {{ r }}
             </div>
-
-            <div class="card">
-                <h3>🔍 실시간 분석 소스 (Raw Data)</h3>
-                <ul>
-                    <li v-for="(r, i) in result.reviews" :key="i">{{ r }}</li>
-                </ul>
-            </div>
+            <p style="font-size: 0.8rem; color: #99.9;">"{{ res.product }}"에 대해 {{ res.reviews.length }}건의 소스를 분석했습니다.</p>
         </div>
     </div>
 
     <script>
         new Vue({
             el: '#app',
-            data: {
-                query: '',
-                loading: false,
-                result: null
-            },
+            data: { query: '', res: null, loading: false },
             methods: {
-                async analyzeProduct() {
-                    if (!this.query) return alert('제품명을 입력해주세요!');
-                    this.loading = true;
-                    this.result = null;
+                async analyze() {
+                    this.loading = true; this.res = null;
                     try {
-                        const response = await axios.get(`/analyze?q=${encodeURIComponent(this.query)}`);
-                        this.result = response.data;
-                    } catch (error) {
-                        alert('데이터 수집 중 오류가 발생했습니다.');
-                    } finally {
-                        this.loading = false;
-                    }
+                        const response = await axios.get('/analyze?q=' + this.query);
+                        this.res = response.data;
+                    } catch (e) { alert('에러 발생!'); }
+                    finally { this.loading = false; }
                 }
             }
-        });
+        })
     </script>
 </body>
 </html>
