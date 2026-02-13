@@ -2,51 +2,67 @@
 <html>
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>쇼핑 실패 방지기 🛡️</title>
     <script src="https://cdn.jsdelivr.net/npm/vue@2"></script>
     <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
     <style>
-        body { font-family: sans-serif; background: #f4f7f9; padding: 20px; }
-        .box { max-width: 700px; margin: 0 auto; background: white; padding: 25px; border-radius: 15px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
-        .score { font-size: 3rem; color: #007bff; font-weight: bold; text-align: center; margin: 15px 0; }
-        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-top: 20px; }
-        .card { padding: 15px; border-radius: 10px; border: 1px solid #eee; }
-        .bad { border-top: 4px solid #ff4d4f; background: #fff1f0; }
-        .good { border-top: 4px solid #52c41a; background: #f6ffed; }
-        input { width: 70%; padding: 12px; border: 1px solid #ddd; border-radius: 5px; }
-        button { padding: 12px 20px; background: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer; }
+        body { font-family: 'Pretendard', sans-serif; background: #f8fafc; padding: 20px; color: #334155; line-height: 1.6; }
+        .box { max-width: 800px; margin: 0 auto; background: white; padding: 30px; border-radius: 24px; box-shadow: 0 10px 40px rgba(0,0,0,0.08); }
+        .score-box { background: linear-gradient(135deg, #1a73e8, #0d47a1); color: white; padding: 35px; border-radius: 20px; text-align: center; margin-bottom: 30px; }
+        .score-num { font-size: 4.5rem; font-weight: 900; }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        .card { padding: 20px; border-radius: 16px; border: 1px solid #e2e8f0; }
+        .bad { border-top: 6px solid #ef4444; background: #fef2f2; }
+        .good { border-top: 6px solid #22c55e; background: #f0fdf4; }
+        .input-group { display: flex; gap: 10px; margin-bottom: 35px; }
+        input { flex: 1; padding: 15px; border: 2px solid #e2e8f0; border-radius: 12px; font-size: 1rem; outline: none; }
+        input:focus { border-color: #1a73e8; }
+        button { padding: 15px 30px; background: #1a73e8; color: white; border: none; border-radius: 12px; font-weight: bold; cursor: pointer; transition: 0.3s; }
+        button:disabled { background: #cbd5e1; cursor: not-allowed; }
+        .tag { background: rgba(255,255,255,0.2); padding: 5px 12px; border-radius: 20px; margin: 4px; display: inline-block; font-size: 0.85rem; }
     </style>
 </head>
 <body>
     <div id="app" class="box">
-        <h2 style="text-align: center;">쇼핑 실패 방지기 🛡️</h2>
-        <div style="text-align: center;">
-            <input v-model="query" placeholder="제품명을 입력하세요">
-            <button @click="analyze">분석 시작</button>
+        <h2 style="text-align: center; color: #1e293b; margin-bottom: 5px;">쇼핑 실패 방지기 🛡️</h2>
+        <p style="text-align: center; color: #64748b; margin-bottom: 30px;">커뮤니티의 거친 목소리를 분석해 점수를 매깁니다.</p>
+
+        <div class="input-group">
+            <input v-model="query" placeholder="제품명을 입력하세요 (예: S23, 에어팟)" @keyup.enter="analyze">
+            <button @click="analyze" :disabled="loading" v-text="loading ? '데이터 수집 중...' : '분석 시작'"></button>
         </div>
 
-        <div v-if="loading" style="text-align: center; margin: 20px;">데이터 분석 중... ⏳</div>
-
         <div v-if="res">
-            <div class="score">{{ res.score }}점</div>
-            <p style="text-align: center; color: #666;">광고 의심 지수: {{ res.ad_ratio }}%</p>
-            
+            <div class="score-box">
+                <div style="font-size: 1.1rem; opacity: 0.9;">구매 추천 점수</div>
+                <div class="score-num" v-text="res.score"></div>
+                <div style="margin-top: 15px;">
+                    <span v-for="f in res.summary.features" class="tag" v-text="'#' + f"></span>
+                </div>
+            </div>
+
             <div class="grid">
                 <div class="card good">
-                    <strong>✅ 장점/특징</strong>
-                    <ul style="font-size: 0.85rem;"><li v-for="p in res.summary.pros">{{ p }}</li></ul>
+                    <strong style="color: #15803d;">✅ 장점 및 특징</strong>
+                    <ul style="padding-left: 20px; margin-top: 10px;">
+                        <li v-for="p in res.summary.pros" v-text="p" style="margin-bottom: 8px; font-size: 0.9rem;"></li>
+                    </ul>
                 </div>
                 <div class="card bad">
-                    <strong>⚠️ 주요 불만</strong>
-                    <ul style="font-size: 0.85rem;"><li v-for="c in res.summary.cons">{{ c }}</li></ul>
+                    <strong style="color: #b91c1c;">⚠️ 실사용자 불만</strong>
+                    <ul style="padding-left: 20px; margin-top: 10px;">
+                        <li v-for="c in res.summary.cons" v-text="c" style="margin-bottom: 8px; font-size: 0.9rem;"></li>
+                    </ul>
                 </div>
             </div>
 
-            <h4 style="margin-top:25px;">🔍 실시간 리뷰 원본</h4>
-            <div v-for="(r, i) in res.reviews" style="font-size: 0.8rem; margin-bottom: 8px; color: #555;">
-                {{ i+1 }}. {{ r }}
+            <div style="margin-top: 40px;">
+                <h4 style="border-bottom: 2px solid #f1f5f9; padding-bottom: 10px; color: #475569;">🔍 분석 소스 원본 ({{ res.reviews.length }}건)</h4>
+                <div v-for="(r, i) in res.reviews" style="font-size: 0.85rem; padding: 12px; border-bottom: 1px solid #f8fafc; color: #64748b;">
+                    <span style="font-weight: bold; color: #94a3b8;">{{ i+1 }}.</span> {{ r }}
+                </div>
             </div>
-            <p style="font-size: 0.8rem; color: #99.9;">"{{ res.product }}"에 대해 {{ res.reviews.length }}건의 소스를 분석했습니다.</p>
         </div>
     </div>
 
@@ -56,11 +72,12 @@
             data: { query: '', res: null, loading: false },
             methods: {
                 async analyze() {
+                    if(!this.query) return;
                     this.loading = true; this.res = null;
                     try {
-                        const response = await axios.get('/analyze?q=' + this.query);
+                        const response = await axios.get('/analyze?q=' + encodeURIComponent(this.query));
                         this.res = response.data;
-                    } catch (e) { alert('에러 발생!'); }
+                    } catch (e) { alert('데이터를 가져오지 못했습니다.'); }
                     finally { this.loading = false; }
                 }
             }
