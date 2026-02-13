@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>쇼핑 실패 방지기 - 실시간 리서치 엔진</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .spinner { animation: spin 1s linear infinite; }
+        .fade-in { animation: fadeIn 0.5s ease-in-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        .disadvantage-item { border-left: 4px solid #EF4444; }
+    </style>
+</head>
+<body class="bg-gray-50 min-h-screen font-sans">
+    <div x-data="shoppingGuard()" class="max-w-4xl mx-auto px-4 py-10">
+        
+        <header class="mb-10 text-center">
+            <h1 class="text-4xl font-extrabold text-gray-900 mb-2">쇼핑 실패 방지기 🛡️</h1>
+            <p class="text-gray-600 text-lg">광고는 걸러내고, 실제 사용자의 불만만 실시간으로 수집합니다.</p>
+        </header>
+
+        <div class="bg-white rounded-2xl shadow-xl p-6 mb-8">
+            <div class="flex flex-col sm:flex-row gap-3">
+                <input 
+                    x-model="reviewInput" 
+                    type="text" 
+                    placeholder="제품명을 입력하세요 (예: 갤럭시 S24, LG 건조기)"
+                    class="flex-1 px-5 py-4 border border-gray-200 rounded-xl focus:ring-4 focus:ring-teal-500/20 focus:border-teal-500 outline-none transition-all text-lg"
+                    @keydown.enter="analyzeProduct"
+                >
+                <button 
+                    @click="analyzeProduct" 
+                    :disabled="isLoading"
+                    class="px-8 py-4 bg-teal-600 hover:bg-teal-700 text-white font-bold rounded-xl transition-all disabled:opacity-50 flex items-center justify-center min-w-[140px]"
+                >
+                    <span x-show="!isLoading">분석 시작</span>
+                    <i x-show="isLoading" class="fas fa-circle-notch spinner text-xl"></i>
+                </button>
+            </div>
+        </div>
+
+        <div x-show="isLoading" class="text-center py-12 fade-in">
+            <div class="mb-4 text-teal-600">
+                <i class="fas fa-search text-5xl animate-bounce"></i>
+            </div>
+            <p class="text-xl font-bold text-gray-800" x-text="progressMessage"></p>
+            <p class="text-gray-500 mt-2">전 세계 웹사이트의 실제 리뷰를 뒤지는 중입니다...</p>
+        </div>
+
+        <template x-if="analysisResult">
+            <div class="space-y-8 fade-in">
+                
+                <div class="bg-amber-50 border-l-4 border-amber-400 p-6 rounded-r-xl shadow-sm">
+                    <div class="flex items-center mb-2">
+                        <i class="fas fa-bullhorn text-amber-500 mr-2 text-xl"></i>
+                        <h2 class="text-xl font-bold text-amber-900">광고 의심 지수</h2>
+                    </div>
+                    <p class="text-3xl font-black text-amber-600"><span x-text="analysisResult.adPercentage"></span>%</p>
+                    <p class="text-amber-800 mt-1 italic text-sm">※ 분석된 데이터 중 협찬/원고료 관련 키워드가 포함된 비율입니다.</p>
+                </div>
+
+                <div class="bg-white rounded-2xl shadow-xl p-8">
+                    <h2 class="text-2xl font-bold text-gray-900 mb-6 flex items-center">
+                        <i class="fas fa-exclamation-triangle text-red-500 mr-3"></i>
+                        수집된 실제 불만 사항
+                    </h2>
+                    <div class="space-y-6">
+                        <template x-for="(review, index) in analysisResult.reviews" :key="index">
+                            <div class="disadvantage-item bg-red-50/50 p-5 rounded-r-xl transition-hover hover:bg-red-50">
+                                <p class="text-gray-800 leading-relaxed font-medium">
+                                    <span class="text-red-600 font-bold mr-2">리뷰 <span x-text="index + 1"></span>.</span>
+                                    <span x-text="review"></span>
+                                </p>
+                            </div>
+                        </template>
+                    </div>
+                </div>
+
+                <div class="bg-teal-600 rounded-2xl p-8 text-white shadow-lg shadow-teal-200">
+                    <h2 class="text-xl font-bold mb-2 italic">Search Summary</h2>
+                    <p class="text-2xl font-light leading-snug">
+                        "<span class="font-bold underline" x-text="analysisResult.productName"></span>" 제품에 대해 총 <span class="font-bold text-yellow-300" x-text="analysisResult.totalCount"></span>건의 실시간 소스를 분석했습니다.
+                    </p>
+                </div>
+            </div>
+        </template>
+    </div>
+
+    <script>
+        function shoppingGuard() {
+            return {
+                reviewInput: '',
+                isLoading: false,
+                progressMessage: '',
+                analysisResult: null,
+
+                async analyzeProduct() {
+                    if (!this.reviewInput.trim()) return;
+
+                    this.isLoading = true;
+                    this.progressMessage = `"${this.reviewInput}" 분석 엔진 가동...`;
+                    this.analysisResult = null;
+
+                    try {
+                        // ⭐️ 핵심 수정 포인트: 상대 경로 주소 사용
+                        // Render나 Replit 배포 시 같은 도메인이므로 /analyze만 써도 됩니다.
+                        const response = await fetch(`/analyze?q=${encodeURIComponent(this.reviewInput)}`);
+                        const result = await response.json();
+
+                        if (result.status === "success") {
+                            this.analysisResult = {
+                                productName: result.product,
+                                adPercentage: result.ad_ratio,
+                                totalCount: result.total_count,
+                                reviews: result.reviews.slice(0, 10) // 상위 10개만 표시
+                            };
+                        } else {
+                            alert("데이터를 가져오지 못했습니다.");
+                        }
+                    } catch (error) {
+                        console.error("Error:", error);
+                        alert("서버 연결 실패! 백엔드 상태를 확인하세요.");
+                    } finally {
+                        this.isLoading = false;
+                    }
+                }
+            }
+        }
+    </script>
+</body>
+</html>
