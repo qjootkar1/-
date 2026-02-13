@@ -3,53 +3,43 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>쇼핑 경비원 🛡️</title>
+    <title>쇼핑 실패 방지기 🛡️</title>
     <script src="https://cdn.jsdelivr.net/npm/vue@2"></script>
     <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
     <style>
         :root { --primary: #2563eb; --danger: #ef4444; --success: #10b981; --bg: #f8fafc; }
-        body { font-family: 'Pretendard', sans-serif; background: var(--bg); margin: 0; padding: 20px; color: #1e293b; line-height: 1.6; }
+        body { font-family: sans-serif; background: var(--bg); margin: 0; padding: 20px; color: #1e293b; line-height: 1.6; }
         .container { max-width: 850px; margin: 0 auto; background: white; padding: 40px; border-radius: 32px; box-shadow: 0 20px 40px rgba(0,0,0,0.05); }
         .header { text-align: center; margin-bottom: 40px; }
         .search-bar { display: flex; gap: 10px; background: #f1f5f9; padding: 8px; border-radius: 20px; margin-bottom: 40px; }
         input { flex: 1; border: none; background: transparent; padding: 15px; font-size: 1rem; outline: none; }
-        button { background: var(--primary); color: white; border: none; padding: 0 30px; border-radius: 15px; font-weight: bold; cursor: pointer; transition: 0.2s; }
+        button { background: var(--primary); color: white; border: none; padding: 0 30px; border-radius: 15px; font-weight: bold; cursor: pointer; transition: 0.2s; min-width: 120px; }
         button:disabled { opacity: 0.5; cursor: not-allowed; }
-        
         .report-section { border: 1px solid #e2e8f0; border-radius: 24px; padding: 30px; }
         .score-wrap { text-align: center; margin-bottom: 30px; }
-        .score-box { width: 150px; height: 150px; border-radius: 50%; display: inline-flex; flex-direction: column; align-items: center; justify-content: center; color: white; margin-bottom: 15px; box-shadow: 0 10px 25px rgba(0,0,0,0.1); }
+        .score-box { width: 140px; height: 140px; border-radius: 50%; display: inline-flex; flex-direction: column; align-items: center; justify-content: center; color: white; margin-bottom: 15px; }
         .score-num { font-size: 3.5rem; font-weight: 900; line-height: 1; }
-        
-        .high { background: var(--success); }
-        .mid { background: #f59e0b; }
-        .low { background: var(--danger); }
-
-        .reasoning { background: #f1f5f9; border-radius: 16px; padding: 20px; margin-bottom: 30px; text-align: left; }
-        .badge-group { display: flex; gap: 10px; margin-top: 10px; }
-        .badge { padding: 5px 12px; border-radius: 8px; font-size: 0.85rem; font-weight: bold; }
-        .bg-good { background: #dcfce7; color: var(--success); }
-        .bg-bad { background: #fee2e2; color: var(--danger); }
-
+        .high { background: var(--success); } .mid { background: #f59e0b; } .low { background: var(--danger); }
         .tag { background: #eff6ff; color: #1d4ed8; padding: 6px 14px; border-radius: 10px; margin: 4px; display: inline-block; font-size: 0.85rem; font-weight: 600; }
         .con-item { background: #fffafb; border: 1px solid #fecaca; padding: 15px; border-radius: 14px; margin-bottom: 10px; font-size: 0.9rem; }
-
-        .loading-icon { border: 3px solid #f3f3f3; border-top: 3px solid white; border-radius: 50%; width: 18px; height: 18px; animation: spin 1s linear infinite; display: inline-block; margin-right: 8px; }
+        .loading-spin { border: 3px solid #f3f3f3; border-top: 3px solid white; border-radius: 50%; width: 16px; height: 16px; animation: spin 1s linear infinite; display: inline-block; margin-right: 8px; vertical-align: middle; }
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
     </style>
 </head>
 <body>
     <div id="app" class="container">
         <div class="header">
-            <h1>쇼핑 경비원 🛡️</h1>
-            <p>음질, 착용감부터 가전의 성능까지 현실적으로 분석합니다.</p>
+            <h1>쇼핑 실패 방지기 🛡️</h1>
+            <p>음질, 착용감, 성능을 현실적으로 분석합니다.</p>
         </div>
 
         <div class="search-bar">
-            <input v-model="query" placeholder="상품명 입력 (예: 에어팟 4, 다이슨 청소기)" @keyup.enter="analyze">
+            <input v-model="query" placeholder="상품명 입력" @keyup.enter="analyze">
             <button @click="analyze" :disabled="loading">
-                <span v-if="loading" class="loading-icon"></span>
-                [[ loading ? '분석중' : '분석하기' ]]
+                <span v-if="loading">
+                    <span class="loading-spin"></span>분석중
+                </span>
+                <span v-else>분석하기</span>
             </button>
         </div>
 
@@ -59,28 +49,20 @@
                     <span class="score-num">[[ res.score ]]</span>
                     <span style="font-size: 0.8rem; font-weight: bold;">추천 지수</span>
                 </div>
-                <div>
-                    <span v-for="t in res.tags" class="tag">#[[ t ]]</span>
+                <div><span v-for="t in res.tags" class="tag">#[[ t ]]</span></div>
+            </div>
+
+            <div style="background: #f1f5f9; padding: 20px; border-radius: 16px; margin-bottom: 30px;">
+                <h4 style="margin: 0 0 10px 0;">📋 분석 요약</h4>
+                <div v-for="r in res.reason" style="font-size: 0.95rem;">📍 [[ r ]]</div>
+                <div style="margin-top: 10px; display: flex; gap: 10px;">
+                    <span style="background:#dcfce7; color:#10b981; padding:4px 10px; border-radius:8px; font-size:0.8rem; font-weight:bold;">👍 긍정 [[ res.pros_n ]]</span>
+                    <span style="background:#fee2e2; color:#ef4444; padding:4px 10px; border-radius:8px; font-size:0.8rem; font-weight:bold;">⚠️ 주의 [[ res.cons_n ]]</span>
                 </div>
             </div>
 
-            <div class="reasoning">
-                <h4 style="margin-top: 0;">📋 분석 요약</h4>
-                <div v-for="r in res.reason" style="margin-bottom: 5px; font-size: 0.95rem;">📍 [[ r ]]</div>
-                <div class="badge-group">
-                    <div class="badge bg-good">👍 긍정 신호 [[ res.pros_n ]]건</div>
-                    <div class="badge bg-bad">⚠️ 주의 신호 [[ res.cons_n ]]건</div>
-                </div>
-            </div>
-
-            <h4 style="color: var(--danger);">⚠️ 실사용자 주요 아쉬운 점</h4>
-            <div v-for="c in res.cons_list" class="con-item">
-                ❌ [[ c ]]
-            </div>
-
-            <div style="margin-top: 30px; opacity: 0.5; font-size: 0.75rem;">
-                * 검색된 데이터 원본 샘플: [[ res.reviews[0] ]]... 외 [[ res.reviews.length ]]건
-            </div>
+            <h4 style="color: var(--danger);">⚠️ 주요 아쉬운 점</h4>
+            <div v-for="c in res.cons_list" class="con-item">❌ [[ c ]]</div>
         </div>
     </div>
 
@@ -96,7 +78,7 @@
                     try {
                         const response = await axios.get('/analyze?q=' + encodeURIComponent(this.query));
                         this.res = response.data;
-                    } catch (e) { alert('분석 실패'); }
+                    } catch (e) { alert('분석 중 오류 발생'); }
                     finally { this.loading = false; }
                 }
             }
