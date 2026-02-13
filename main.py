@@ -6,7 +6,6 @@ from fastapi.templating import Jinja2Templates
 from collections import Counter
 
 app = FastAPI()
-# 기본 설정을 사용하여 충돌을 방지합니다.
 templates = Jinja2Templates(directory="templates")
 
 @app.get("/", response_class=HTMLResponse)
@@ -19,17 +18,23 @@ async def analyze(q: str = Query(...)):
     search_url = "https://google.serper.dev/search"
     headers = {'X-API-KEY': api_key, 'Content-Type': 'application/json'}
     
-    # [수백가지 키워드 데이터 유지]
-    search_queries = [f"{q} 사용기 장단점", f"{q} 음질 착용감 후기", f"{q} 실사용 만족도 이슈"]
+    # 쿼리 범위 확장: 단점뿐만 아니라 전체적인 평가를 수집
+    search_queries = [
+        f"{q} 장점 단점 정리", 
+        f"{q} 실사용 총평", 
+        f"{q} 음질 착용감 비교 후기",
+        f"{q} 구매 가이드 추천"
+    ]
     all_snippets = []
     
     for query in search_queries:
-        payload = {"q": query, "gl": "ko", "hl": "ko", "num": 25}
+        payload = {"q": query, "gl": "ko", "hl": "ko", "num": 30} # 검색 결과 수 살짝 증가
         try:
             res = requests.post(search_url, json=payload, headers=headers)
             all_snippets.extend([item.get('snippet', '') for item in res.json().get('organic', [])])
         except: continue
 
+    # 키워드 사전 (기존 유지)
     analysis_dict = {
         "음질/사운드": ["음질", "저음", "고음", "베이스", "해상도", "음향", "타격감", "화이트노이즈", "음색", "보컬", "악기분리", "공간감", "치찰음"],
         "착용감/디자인": ["착용감", "이어팁", "귀아픔", "무게", "그립감", "재질", "마감", "디자인", "색상", "두께", "핏", "이압"],
@@ -42,32 +47,44 @@ async def analyze(q: str = Query(...)):
     }
 
     pros_count, cons_count = 0, 0
-    detected_tags, cons_details = [], []
+    detected_tags = []
+    pros_details, cons_details = [], [] # 장점 리스트 추가
     
     unique_snippets = list(set(all_snippets))
     for txt in unique_snippets:
         if any(ad in txt for ad in ["소정의", "지원받아", "협찬", "광고"]): continue
+        
         bad_signals = ["불편", "문제", "단점", "아쉽", "별로", "비추", "끊겨", "아파", "비싸", "이슈", "실망"]
-        good_signals = ["좋음", "만족", "추천", "최고", "깔끔", "풍부", "편해", "가벼워", "빠름", "강추", "완벽"]
+        good_signals = ["좋음", "만족", "추천", "최고", "깔끔", "풍부", "편해", "가벼워", "빠름", "강추", "완벽", "훌륭"]
+        
+        # 부정/긍정 데이터 각각 추출
         if any(b in txt for b in bad_signals): 
             cons_count += 1
             cons_details.append(txt[:100].replace('\n', ' ') + "...")
         if any(g in txt for g in good_signals): 
             pros_count += 1
+            pros_details.append(txt[:100].replace('\n', ' ') + "...")
+
         for cat, words in analysis_dict.items():
             if any(w in txt for w in words):
                 detected_tags.append(cat)
 
-    final_score = 80 + (pros_count * 1.5) - (cons_count * 2.5)
+    # 현실적 점수 반영
+    final_score = 78 + (pros_count * 1.8) - (cons_count * 2.2)
     final_score = max(min(round(final_score), 100), 10)
 
     reason_summary = []
-    if final_score >= 85: reason_summary.append("전반적인 실사용 만족도가 매우 높습니다.")
-    elif final_score >= 70: reason_summary.append("대체로 무난하지만 일부 아쉬운 점이 포착됩니다.")
-    else: reason_summary.append("사용자들이 공통적으로 지적하는 특정 이슈가 확인됩니다.")
+    if final_score >= 85: reason_summary.append("전반적인 실사용 만족도가 매우 높고 추천할만합니다.")
+    elif final_score >= 70: reason_summary.append("대체로 무난하며 장점이 단점을 상쇄하는 제품입니다.")
+    else: reason_summary.append("사용자들이 지적하는 명확한 아쉬운 점이 있으니 확인이 필요합니다.")
 
     return {
-        "score": final_score, "pros_n": pros_count, "cons_n": cons_count,
-        "reason": reason_summary, "tags": [k for k, v in Counter(detected_tags).most_common(8)],
-        "cons_list": list(set(cons_details))[:6], "reviews": unique_snippets[:12]
+        "score": final_score, 
+        "pros_n": pros_count, 
+        "cons_n": cons_count,
+        "reason": reason_summary, 
+        "tags": [k for k, v in Counter(detected_tags).most_common(8)],
+        "pros_list": list(set(pros_details))[:4], # 장점 4개 추가
+        "cons_list": list(set(cons_details))[:4], # 단점 4개
+        "reviews": unique_snippets[:12]
     }
