@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>쇼핑 실패 방지기 🛡️</title>
+    <title>쇼핑 경비원 🛡️</title>
     <script src="https://cdn.jsdelivr.net/npm/vue@2"></script>
     <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
     <style>
@@ -29,47 +29,46 @@
 <body>
     <div id="app" class="container">
         <div class="header">
-            <h1>쇼핑 실패 방지기 🛡️</h1>
+            <h1>쇼핑 경비원 🛡️</h1>
             <p>음질, 착용감, 성능을 현실적으로 분석합니다.</p>
         </div>
 
         <div class="search-bar">
             <input v-model="query" placeholder="상품명 입력" @keyup.enter="analyze">
             <button @click="analyze" :disabled="loading">
-                <span v-if="loading">
-                    <span class="loading-spin"></span>분석중
-                </span>
+                <span v-if="loading"><span class="loading-spin"></span>분석중</span>
                 <span v-else>분석하기</span>
             </button>
         </div>
 
+        {% raw %}
         <div v-if="res" class="report-section">
             <div class="score-wrap">
                 <div :class="['score-box', res.score >= 80 ? 'high' : (res.score >= 60 ? 'mid' : 'low')]">
-                    <span class="score-num">[[ res.score ]]</span>
+                    <span class="score-num">{{ res.score }}</span>
                     <span style="font-size: 0.8rem; font-weight: bold;">추천 지수</span>
                 </div>
-                <div><span v-for="t in res.tags" class="tag">#[[ t ]]</span></div>
+                <div><span v-for="t in res.tags" class="tag">#{{ t }}</span></div>
             </div>
 
             <div style="background: #f1f5f9; padding: 20px; border-radius: 16px; margin-bottom: 30px;">
                 <h4 style="margin: 0 0 10px 0;">📋 분석 요약</h4>
-                <div v-for="r in res.reason" style="font-size: 0.95rem;">📍 [[ r ]]</div>
+                <div v-for="r in res.reason" style="font-size: 0.95rem;">📍 {{ r }}</div>
                 <div style="margin-top: 10px; display: flex; gap: 10px;">
-                    <span style="background:#dcfce7; color:#10b981; padding:4px 10px; border-radius:8px; font-size:0.8rem; font-weight:bold;">👍 긍정 [[ res.pros_n ]]</span>
-                    <span style="background:#fee2e2; color:#ef4444; padding:4px 10px; border-radius:8px; font-size:0.8rem; font-weight:bold;">⚠️ 주의 [[ res.cons_n ]]</span>
+                    <span style="background:#dcfce7; color:#10b981; padding:4px 10px; border-radius:8px; font-size:0.8rem; font-weight:bold;">👍 긍정 {{ res.pros_n }}</span>
+                    <span style="background:#fee2e2; color:#ef4444; padding:4px 10px; border-radius:8px; font-size:0.8rem; font-weight:bold;">⚠️ 주의 {{ res.cons_n }}</span>
                 </div>
             </div>
 
             <h4 style="color: var(--danger);">⚠️ 주요 아쉬운 점</h4>
-            <div v-for="c in res.cons_list" class="con-item">❌ [[ c ]]</div>
+            <div v-for="c in res.cons_list" class="con-item">❌ {{ c }}</div>
         </div>
+        {% endraw %}
     </div>
 
     <script>
         new Vue({
             el: '#app',
-            delimiters: ['[[', ']]'],
             data: { query: '', res: null, loading: false },
             methods: {
                 async analyze() {
