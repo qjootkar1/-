@@ -20,7 +20,7 @@ async def analyze(q: str = Query(...)):
     search_url = "https://google.serper.dev/search"
     headers = {'X-API-KEY': api_key, 'Content-Type': 'application/json'}
     
-    # 데이터 확보를 위한 다각도 검색 쿼리
+    # 데이터 양을 늘리기 위한 4중 검색
     target_queries = [
         f"{q} 실제 사용 단점 결함",
         f"{q} 내돈내산 솔직 불만",
@@ -39,7 +39,7 @@ async def analyze(q: str = Query(...)):
     unique_items = {item.get('link'): item for item in all_raw_items}.values()
     
     analysis = {"pros": [], "cons": [], "features": []}
-    score = 72.0 
+    score = 75.0 
     ad_count = 0
     ad_keywords = ['소정의', '원고료', '협찬', '지원받아', '체험단', '무상제공']
 
@@ -53,6 +53,7 @@ async def analyze(q: str = Query(...)):
         if q.lower() in txt.lower() or any(w in txt for w in ['제품', '사용', '구매', '리뷰']):
             valid_reviews.append(txt)
             
+            # 분석 키워드
             pro_map = ["가성비", "음질", "만족", "추천", "빠름", "편함", "혁신", "견고", "깔끔", "정확", "튼튼"]
             con_map = ["비쌈", "느림", "무겁", "발열", "소음", "불량", "끊김", "싱크", "단점", "최악", "고장", "베젤", "진동", "이슈"]
             feat_map = ["배터리", "디스플레이", "카메라", "성능", "무게", "사이즈", "노캔", "연동성", "충전", "방수", "디자인"]
