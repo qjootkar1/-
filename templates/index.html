@@ -6,50 +6,38 @@
     <script src="https://cdn.jsdelivr.net/npm/vue@2"></script>
     <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
     <style>
-        body { font-family: sans-serif; background: #f1f5f9; padding: 20px; color: #334155; }
-        .box { max-width: 800px; margin: 0 auto; background: white; padding: 30px; border-radius: 20px; box-shadow: 0 10px 30px rgba(0,0,0,0.1); }
-        .score-box { text-align: center; padding: 30px; background: #1a73e8; color: white; border-radius: 15px; margin-bottom: 25px; }
-        .score-val { font-size: 4rem; font-weight: 800; }
-        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
-        .card { padding: 20px; border-radius: 12px; border: 1px solid #e2e8f0; font-size: 0.9rem; }
-        .bad-card { background: #fff5f5; border-top: 5px solid #ef4444; }
-        .tag { background: rgba(255,255,255,0.2); padding: 5px 12px; border-radius: 15px; margin: 3px; display: inline-block; font-size: 0.8rem; }
-        input { width: 75%; padding: 15px; border: 2px solid #ddd; border-radius: 10px; font-size: 1rem; }
-        button { padding: 15px 20px; background: #1a73e8; color: white; border: none; border-radius: 10px; cursor: pointer; font-weight: bold; }
-        button:disabled { background: #cbd5e1; }
+        body { font-family: sans-serif; background: #f1f5f9; padding: 20px; }
+        .box { max-width: 700px; margin: 0 auto; background: white; padding: 30px; border-radius: 20px; box-shadow: 0 10px 30px rgba(0,0,0,0.1); }
+        .score-box { text-align: center; padding: 20px; background: #1a73e8; color: white; border-radius: 15px; margin-bottom: 20px; }
+        .score-val { font-size: 3rem; font-weight: bold; }
+        input { width: 70%; padding: 12px; border: 1px solid #ddd; border-radius: 8px; }
+        button { padding: 12px 20px; background: #1a73e8; color: white; border: none; border-radius: 8px; cursor: pointer; }
+        .con-item { background: #fff5f5; border-left: 4px solid #f56565; padding: 10px; margin-bottom: 5px; font-size: 0.85rem; }
     </style>
 </head>
 <body>
     <div id="app" class="box">
         <h2 style="text-align: center;">쇼핑 실패 방지기 🛡️</h2>
-        <div style="text-align: center; margin-bottom: 30px;">
-            <input v-model="query" placeholder="검색어를 입력하세요" @keyup.enter="analyze">
+        <div style="text-align: center; margin-bottom: 20px;">
+            <input v-model="query" placeholder="제품명 입력" @keyup.enter="analyze">
             <button @click="analyze" :disabled="loading" v-text="loading ? '분석 중...' : '확인'"></button>
         </div>
 
         <div v-if="res">
             <div class="score-box">
-                <div style="font-size: 1rem; opacity: 0.8;">실사용 평점</div>
-                <div class="score-val" v-text="res.score"></div>
-                <div><span v-for="t in res.summary.tags" class="tag" v-text="'#'+t"></span></div>
+                <div>구매 추천 점수</div>
+                <div class="score-val">[[ res.score ]]점</div>
+                <span v-for="t in res.summary.tags" style="margin: 0 5px; font-size: 0.8rem; opacity: 0.8;">#[[t]]</span>
             </div>
 
-            <div class="grid">
-                <div class="card">
-                    <strong style="color: #22c55e;">✅ 긍정적인 언급</strong>
-                    <ul style="padding-left: 20px; margin-top: 10px;"><li v-for="p in res.summary.pros" v-text="p"></li></ul>
-                </div>
-                <div class="card bad-card">
-                    <strong style="color: #ef4444;">⚠️ 주의해야 할 단점</strong>
-                    <ul style="padding-left: 20px; margin-top: 10px;"><li v-for="c in res.summary.cons" v-text="c"></li></ul>
-                </div>
+            <div style="margin-bottom: 20px;">
+                <strong>⚠️ 주요 불만 사항</strong>
+                <div v-for="c in res.summary.cons" class="con-item">[[ c ]]</div>
             </div>
 
-            <div style="margin-top: 30px;">
-                <h4 style="border-bottom: 1px solid #eee; padding-bottom: 5px;">🔍 실시간 수집 데이터</h4>
-                <div v-for="(r, i) in res.reviews" style="font-size: 0.8rem; color: #64748b; margin-bottom: 8px;">
-                    {{ i+1 }}. {{ r }}
-                </div>
+            <div>
+                <strong>🔍 수집 데이터 샘플</strong>
+                <div v-for="r in res.reviews" style="font-size: 0.75rem; color: #666; margin-top: 5px;">- [[ r ]]</div>
             </div>
         </div>
     </div>
@@ -57,6 +45,8 @@
     <script>
         new Vue({
             el: '#app',
+            // delimiters를 추가해 Vue가 [[ ]]를 인식하게 합니다.
+            delimiters: ['[[', ']]'],
             data: { query: '', res: null, loading: false },
             methods: {
                 async analyze() {
@@ -65,7 +55,7 @@
                     try {
                         const response = await axios.get('/analyze?q=' + encodeURIComponent(this.query));
                         this.res = response.data;
-                    } catch (e) { alert('분석 중 에러가 발생했습니다.'); }
+                    } catch (e) { alert('에러!'); }
                     finally { this.loading = false; }
                 }
             }
