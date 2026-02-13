@@ -15,82 +15,105 @@ async def home(request: Request):
 async def analyze(q: str = Query(...)):
     api_key = os.environ.get('SERPER_API_KEY')
     if not api_key:
-        return {"status": "error", "message": "API 키 설정 필요"}
+        return {"status": "error", "message": "API 키가 설정되지 않았습니다."}
 
     search_url = "https://google.serper.dev/search"
     headers = {'X-API-KEY': api_key, 'Content-Type': 'application/json'}
     
-    # 데이터 양을 늘리기 위해 검색 결과 수를 40개로 대폭 상향
-    payload = {
-        "q": f"{q} (단점 OR 장점 OR 실사용 OR 후기 OR 고민) (site:gall.dcinside.com OR site:ppomppu.co.kr OR site:fmkorea.com OR site:ruliweb.com OR site:naver.com)",
-        "gl": "ko", "hl": "ko", "num": 40, "tbs": "qdr:y" 
-    }
+    # [전략 1] 데이터 확보를 위한 멀티 타겟 쿼리 (검색량 4배 확장)
+    target_queries = [
+        f"{q} 실제 사용 단점 결함",
+        f"{q} 내돈내산 솔직 불만 후기",
+        f"{q} 커뮤니티 고질병 이슈",
+        f"{q} 장점 특징 요약"
+    ]
     
-    try:
-        response = requests.post(search_url, json=payload, headers=headers)
-        data = response.json()
-        items = data.get('organic', [])
-        
-        analysis = {"pros": [], "cons": [], "features": []}
-        score = 75  # 기본 베이스 점수
-
-        # [초거대 범용 키워드 사전]
-        dict_map = {
-            # 이어폰, 가전, 의류, 캠핑 등 통합 긍정 키워드
-            "pros": [
-                "가성비", "음질 좋", "노캔 대박", "착용감 편", "연결 빠름", "디자인 예쁨", 
-                "튼튼", "배송 빠름", "마감 훌륭", "조용함", "강력 추천", "오래감", "가벼움", 
-                "색상 잘", "삶의 질", "만족도 높", "편리함", "수납 넉넉"
-            ],
-            # 이어폰 끊김, 발열, 소음, 비싼 가격 등 통합 부정 키워드
-            "cons": [
-                "비쌈", "끊김", "싱크 안맞", "무거움", "발열", "소음", "조잡", "배터리 광탈", 
-                "불량", "아쉬움", "별로", "비추", "느림", "베젤 두껍", "먼지 잘", "냄새 남", 
-                "귀 아픔", "압박", "작음", "내구성 약함", "조작 불편", "비효율"
-            ],
-            # 제품의 특성을 나타내는 기술적 키워드
-            "features": [
-                "음질", "통화품질", "노이즈캔슬링", "무선충전", "방수", "무게", "사이즈", 
-                "가격", "디스플레이", "카메라", "착용감", "내구성", "재질", "색상"
-            ]
+    all_raw_items = []
+    for t_query in target_queries:
+        payload = {
+            "q": t_query,
+            "gl": "ko", "hl": "ko", "num": 20, "tbs": "qdr:y" # 최근 1년 데이터
         }
+        try:
+            res = requests.post(search_url, json=payload, headers=headers)
+            all_raw_items.extend(res.json().get('organic', []))
+        except:
+            continue
 
-        valid_reviews = []
-        for item in items:
-            txt = item.get('snippet', '')
+    # 중복 제거 (URL 기준)
+    unique_items = {item.get('link'): item for item in all_raw_items}.values()
+    
+    # [전략 2] 방대한 범용 분석 사전
+    dict_map = {
+        "pros": [
+            "가성비", "음질", "만족", "추천", "빠름", "편함", "혁신", "견고", "오래감", "예쁨", 
+            "마감", "안정적", "가벼움", "조용", "최고", "깔끔", "정확", "튼튼", "수납", "품질"
+        ],
+        "cons": [
+            "비쌈", "느림", "무거", "발열", "소음", "불량", "끊김", "싱크", "단점", "최악", 
+            "버벅", "비효율", "부족", "불편", "고장", "베젤", "진동", "이슈", "아픔", "압박",
+            "냄새", "먼지", "조잡", "광탈", "품절", "불친절", "어려움", "복잡", "허술"
+        ],
+        "features": [
+            "배터리", "디스플레이", "카메라", "성능", "무게", "사이즈", "노캔", "연동성", 
+            "그립감", "충전", "방수", "가격", "재질", "디자인", "색상", "음질", "착용감"
+        ]
+    }
+
+    analysis = {"pros": [], "cons": [], "features": []}
+    score = 72.0  # 기본 시작 점수
+    ad_count = 0
+    ad_keywords = ['소정의', '원고료', '협찬', '지원받아', '체험단', '무상제공']
+
+    valid_reviews = []
+    for item in unique_items:
+        txt = item.get('snippet', '')
+        
+        # 1. 광고 필터링
+        if any(k in txt for k in ad_keywords):
+            ad_count += 1
+            continue
             
-            # 검색어가 포함된 유효한 데이터만 선별
-            if q.lower() not in txt.lower(): continue
+        # 2. 관련성 체크 (제품명 검색어 포함 여부)
+        if q.lower() in txt.lower() or any(w in txt for w in ['제품', '사용', '구매', '후기']):
             valid_reviews.append(txt)
+            
+            # 3. 가점 및 감점 로직 (점수 정밀화)
+            found_pro = False
+            for w in dict_map["pros"]:
+                if w in txt:
+                    analysis["pros"].append(txt[:75] + "...")
+                    score += 1.2
+                    found_pro = True
+                    break
+            
+            # 단점은 더 민감하게 감점 (쇼핑 방지기 핵심)
+            for w in dict_map["cons"]:
+                if w in txt:
+                    analysis["cons"].append(txt[:75] + "...")
+                    score -= 4.0  # 감점 폭을 크게 설정
+                    break
+            
+            # 특징 키워드 추출
+            for w in dict_map["features"]:
+                if w in txt:
+                    analysis["features"].append(w)
 
-            # 긍정 분석 & 점수 가점
-            for word in dict_map["pros"]:
-                if word in txt:
-                    analysis["pros"].append(txt[:70] + "...")
-                    score += 1.8
-            # 부정 분석 & 점수 감점 (쇼핑 방지기이므로 감점 폭이 큽니다)
-            for word in dict_map["cons"]:
-                if word in txt:
-                    analysis["cons"].append(txt[:70] + "...")
-                    score -= 3.5
-            # 특징 추출
-            for word in dict_map["features"]:
-                if word in txt:
-                    analysis["features"].append(word)
-
-        # 최종 점수 산출 (보정치 적용)
-        final_score = max(min(round(score), 100), 5)
-        
-        return {
-            "status": "success",
-            "product": q,
-            "score": final_score,
-            "summary": {
-                "pros": list(set(analysis["pros"]))[:4],
-                "cons": list(set(analysis["cons"]))[:4],
-                "features": list(set(analysis["features"]))[:6]
-            },
-            "reviews": valid_reviews[:10] # 원본 리뷰도 더 많이 보여줌
-        }
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+    # [전략 3] 최종 결과 가공
+    final_score = max(min(round(score), 100), 5)
+    
+    # 특징 태그 중복 제거 및 상위 추출
+    final_features = list(set(analysis["features"]))[:8]
+    
+    return {
+        "status": "success",
+        "product": q,
+        "score": final_score,
+        "ad_ratio": round((ad_count / len(unique_items) * 100)) if unique_items else 0,
+        "summary": {
+            "pros": list(set(analysis["pros"]))[:5],
+            "cons": list(set(analysis["cons"]))[:5],
+            "features": final_features
+        },
+        "reviews": valid_reviews[:15] # 원본 소스 제공량 확대
+    }
