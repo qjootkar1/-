@@ -2,93 +2,57 @@
 <html lang="ko">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>쇼핑 실패 방지기 🛡️</title>
-    <script src="https://cdn.jsdelivr.net/npm/vue@2"></script>
-    <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+    <title>실시간 제품 분석기</title>
     <style>
-        :root { --primary: #2563eb; --danger: #ef4444; --success: #10b981; --bg: #f8fafc; }
-        body { font-family: 'Pretendard', sans-serif; background: var(--bg); margin: 0; padding: 20px; color: #1e293b; }
-        .container { max-width: 800px; margin: 0 auto; background: white; padding: 40px; border-radius: 32px; box-shadow: 0 10px 30px rgba(0,0,0,0.05); }
-        .header { text-align: center; margin-bottom: 30px; }
-        .search-bar { display: flex; gap: 10px; background: #f1f5f9; padding: 6px; border-radius: 18px; margin-bottom: 30px; }
-        input { flex: 1; border: none; background: transparent; padding: 15px; font-size: 1rem; outline: none; }
-        button { background: var(--primary); color: white; border: none; padding: 0 25px; border-radius: 14px; font-weight: bold; cursor: pointer; }
-        
-        .score-circle { width: 130px; height: 130px; border-radius: 50%; display: flex; flex-direction: column; align-items: center; justify-content: center; color: white; margin: 0 auto 20px; }
-        .high { background: var(--success); } .mid { background: #f59e0b; } .low { background: var(--danger); }
-        
-        .summary-box { background: #f8fafc; padding: 20px; border-radius: 20px; margin-bottom: 30px; border: 1px solid #e2e8f0; }
-        .pro-item { background: #f0fdf4; border-left: 5px solid var(--success); padding: 12px 15px; border-radius: 8px; margin-bottom: 10px; font-size: 0.9rem; }
-        .con-item { background: #fffafb; border-left: 5px solid var(--danger); padding: 12px 15px; border-radius: 8px; margin-bottom: 10px; font-size: 0.9rem; }
-        .tag { background: #eff6ff; color: #1d4ed8; padding: 5px 12px; border-radius: 8px; margin: 3px; display: inline-block; font-size: 0.8rem; font-weight: bold; }
-        
-        .loading-spin { border: 3px solid #f3f3f3; border-top: 3px solid white; border-radius: 50%; width: 16px; height: 16px; animation: spin 1s linear infinite; display: inline-block; margin-right: 8px; }
-        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        body { font-family: 'Pretendard', sans-serif; background: #f0f4f8; padding: 20px; color: #333; }
+        .container { max-width: 850px; margin: 0 auto; background: #fff; padding: 40px; border-radius: 20px; box-shadow: 0 10px 30px rgba(0,0,0,0.1); }
+        .title { text-align: center; color: #1a73e8; }
+        .input-group { display: flex; gap: 10px; margin: 30px 0; }
+        input { flex: 1; padding: 15px; border: 2px solid #ddd; border-radius: 12px; font-size: 16px; }
+        button { padding: 15px 30px; background: #1a73e8; color: #fff; border: none; border-radius: 12px; font-weight: bold; cursor: pointer; }
+        #status { font-size: 14px; color: #666; margin-bottom: 10px; font-style: italic; }
+        #result { background: #fafafa; border: 1px solid #eee; padding: 25px; border-radius: 15px; white-space: pre-wrap; line-height: 1.8; }
     </style>
 </head>
 <body>
-    <div id="app" class="container">
-        <div class="header">
-            <h2>쇼핑 실패 방지기 🛡️</h2>
-            <p style="color: #64748b;">광고 없는 진짜 실사용 후기만 쏙쏙!</p>
+    <div class="container">
+        <h1 class="title"> 실시간 제품 분석기</h1>
+        <div class="input-group">
+            <input type="text" id="pName" placeholder="분석할 제품명을 입력하세요...">
+            <button onclick="runAnalysis()">분석 시작</button>
         </div>
-
-        <div class="search-bar">
-            <input v-model="query" placeholder="상품명을 입력하세요" @keyup.enter="analyze">
-            <button @click="analyze" :disabled="loading">
-                <span v-if="loading"><span class="loading-spin"></span>분석중</span>
-                <span v-else>분석 시작</span>
-            </button>
-        </div>
-
-        {% raw %}
-        <div v-if="res">
-            <div class="score-circle" :class="res.score >= 80 ? 'high' : (res.score >= 60 ? 'mid' : 'low')">
-                <span style="font-size: 3rem; font-weight: 900;">{{ res.score }}</span>
-                <span style="font-size: 0.8rem; font-weight: bold;">추천 지수</span>
-            </div>
-            
-            <div style="text-align: center; margin-bottom: 25px;">
-                <span v-for="t in res.tags" class="tag">#{{ t }}</span>
-            </div>
-
-            <div class="summary-box">
-                <h4 style="margin-top: 0;">📋 실사용 데이터 요약</h4>
-                <div v-for="r in res.reason" style="margin-bottom: 8px;">📍 {{ r }}</div>
-                <div style="margin-top: 10px; font-size: 0.85rem; font-weight: bold;">
-                    <span style="color: var(--success);">👍 긍정 신호 {{ res.pros_n }}건</span> | 
-                    <span style="color: var(--danger);">⚠️ 주의 신호 {{ res.cons_n }}건</span>
-                </div>
-            </div>
-
-            <h4 style="color: var(--success);">✨ 진짜 장점 후기</h4>
-            <div v-for="p in res.pros_list" class="pro-item">✅ {{ p }}</div>
-
-            <div style="margin: 30px 0;"></div>
-
-            <h4 style="color: var(--danger);">🚫 진짜 아쉬운 후기</h4>
-            <div v-for="c in res.cons_list" class="con-item">❌ {{ c }}</div>
-        </div>
-        {% endraw %}
+        <div id="status"></div>
+        <div id="result">분석 결과가 여기에 표시됩니다.</div>
     </div>
 
     <script>
-        new Vue({
-            el: '#app',
-            data: { query: '', res: null, loading: false },
-            methods: {
-                async analyze() {
-                    if(!this.query) return;
-                    this.loading = true; this.res = null;
-                    try {
-                        const response = await axios.get('/analyze?q=' + encodeURIComponent(this.query));
-                        this.res = response.data;
-                    } catch (e) { alert('데이터 분석 중 오류가 발생했습니다.'); }
-                    finally { this.loading = false; }
+        async function runAnalysis() {
+            const pName = document.getElementById('pName').value;
+            const resultDiv = document.getElementById('result');
+            const statusDiv = document.getElementById('status');
+
+            if(!pName) return alert("제품명을 입력하세요.");
+
+            statusDiv.innerText = "🌐 웹에서 데이터를 긁어와서 파이썬이 1차 검수 중입니다...";
+            resultDiv.innerText = "AI가 수집된 정보를 분석하여 리포트를 작성하고 있습니다.";
+
+            const fd = new FormData();
+            fd.append('user_input', pName);
+
+            try {
+                const res = await fetch('/chat', { method: 'POST', body: fd });
+                const data = await res.json();
+                
+                if(data.answer) {
+                    statusDiv.innerText = "✅ " + data.data_info;
+                    resultDiv.innerText = data.answer;
+                } else {
+                    resultDiv.innerText = "에러: " + data.error;
                 }
+            } catch(e) {
+                resultDiv.innerText = "서버 연결 오류가 발생했습니다.";
             }
-        })
+        }
     </script>
 </body>
 </html>
