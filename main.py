@@ -1,5 +1,6 @@
 import os
 import requests
+import re
 from fastapi import FastAPI, Request, Query
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
@@ -18,80 +19,82 @@ async def analyze(q: str = Query(...)):
     search_url = "https://google.serper.dev/search"
     headers = {'X-API-KEY': api_key, 'Content-Type': 'application/json'}
     
-    # 쿼리 정밀화: 비교글보다는 해당 기기 자체의 "진짜 후기"를 찾도록 변경
+    # 1. 검색어 강제 고정 (따옴표 활용 및 불필요 모델 제외)
     search_queries = [
-        f"{q} 실사용 후기 내돈내산", 
-        f"{q} 음질 착용감 솔직후기", 
-        f"{q} 일주일 사용 장단점",
-        f"{q} 카페 커뮤니티 후기"
+        f'"{q}" 실제 사용기 단점 아쉬운점', 
+        f'"{q}" 솔직 후기 장단점 특징',
+        f'"{q}" 구매 전 필수 확인 이슈'
     ]
-    all_snippets = []
     
+    all_snippets = []
     for query in search_queries:
-        payload = {"q": query, "gl": "ko", "hl": "ko", "num": 40} # 더 넓은 샘플 확보
+        payload = {"q": query, "gl": "ko", "hl": "ko", "num": 40}
         try:
             res = requests.post(search_url, json=payload, headers=headers)
             all_snippets.extend([item.get('snippet', '') for item in res.json().get('organic', [])])
         except: continue
 
-    # 키워드 사전 (기존 유지하되 분석 강도 조절)
-    analysis_dict = {
-        "음질/사운드": ["음질", "저음", "고음", "베이스", "해상도", "음향", "타격감", "음색", "보컬", "치찰음"],
-        "착용감/디자인": ["착용감", "이어팁", "귀아픔", "무게", "디자인", "색상", "두께", "핏", "이압"],
-        "연결/지연": ["블루투스", "끊김", "페어링", "레이턴시", "싱크", "지연", "멀티포인트"],
-        "기능/노캔": ["노캔", "노이즈캔슬링", "주변소리", "통화품질", "방수", "터치조작"],
-        "성능/작동": ["속도", "렉", "버벅", "최적화", "성능", "반응속도"],
-        "배터리/전력": ["배터리", "충전", "광탈", "지속시간", "C타입", "무선충전"],
-        "소음/발열": ["소음", "팬소음", "진동", "발열", "온도"],
-        "가격/가심비": ["가성비", "비쌈", "저렴", "돈값", "할인", "혜자"]
-    }
+    # 2. 감성 사전 및 문맥 사전 (부정적 뉘앙스 우선 순위)
+    neg_indicators = ["아쉽", "불편", "문제", "별로", "비추", "끊겨", "아파", "이슈", "실망", "부족", "글쎄", "글쎄요", "하지만", "다만"]
+    pos_indicators = ["좋음", "만족", "추천", "최고", "깔끔", "편해", "빠름", "강추", "완벽", "개선"]
 
-    pros_count, cons_count = 0, 0
+    pros_details, cons_details, features = [], [], []
     detected_tags = []
-    pros_details, cons_details = [], []
     
-    unique_snippets = list(set(all_snippets))
-    for txt in unique_snippets:
-        # 1. 스팸 및 단순 가이드글 필터링 강화
-        if any(ad in txt for ad in ["소정의", "지원받아", "협찬", "TOP5", "비교추천"]): continue
-        
-        # 2. 감성 사전 정밀화
-        bad_signals = ["불편", "문제", "단점", "아쉽", "별로", "비추", "끊겨", "아파", "비싸", "이슈", "실망", "부족"]
-        good_signals = ["좋음", "만족", "추천", "최고", "깔끔", "풍부", "편해", "가벼워", "빠름", "강추", "완벽", "개선"]
-        
-        # 3. 긍정/부정 내용이 문장에 포함되었는지 체크
-        is_bad = any(b in txt for b in bad_signals)
-        is_good = any(g in txt for g in good_signals)
-        
-        # 4. 단순 나열이 아닌 '내용'이 있는 것만 수집
-        if is_bad and len(txt) > 20: 
-            cons_count += 1
-            cons_details.append(txt.strip())
-        if is_good and len(txt) > 20: 
-            pros_count += 1
-            pros_details.append(txt.strip())
+    # 모델명에서 숫자와 영문 추출 (정확한 매칭용)
+    q_clean = q.lower().replace(" ", "")
 
-        for cat, words in analysis_dict.items():
-            if any(w in txt for w in words):
+    for txt in list(set(all_snippets)):
+        # [검증 1] 광고/협찬 글 차단
+        if any(ad in txt for ad in ["소정의", "지원받아", "협찬", "TOP", "원고료"]): continue
+        
+        # [검증 2] 모델명 철저 검증 (T18 검색 시 T13이 나오면 탈락)
+        txt_lower = txt.lower().replace(" ", "")
+        if q_clean not in txt_lower: continue
+        
+        # 다른 모델명(숫자가 다른 경우)이 주연인지 확인 (예: T18 검색 중 T13 언급)
+        numbers_in_txt = re.findall(r'\d+', txt_lower)
+        numbers_in_q = re.findall(r'\d+', q_clean)
+        if numbers_in_q and any(num for num in numbers_in_txt if num not in numbers_in_q):
+            # 검색어에 없는 숫자가 모델명처럼 쓰였다면 타 모델 비교글일 확률 높음 -> 제외하거나 매우 조심히 다룸
+            continue
+
+        # [검증 3] 문장 정제 (말줄임표 제거 및 핵심 추출)
+        clean_txt = re.sub(r'\.{2,}', '. ', txt).strip()
+        if len(clean_txt) < 15: continue
+
+        # [검증 4] 오분류 방지 로직 (장점 같은데 단점인 경우)
+        # "좋긴 한데 ~가 아쉽다"는 단점으로 분류해야 함
+        is_neg = any(n in clean_txt for n in neg_indicators)
+        is_pos = any(p in clean_txt for p in pos_indicators)
+
+        if is_neg: # 부정 키워드가 하나라도 있으면 '단점' 혹은 '주의사항'으로 우선 분류
+            cons_details.append(clean_txt)
+        elif is_pos:
+            pros_details.append(clean_txt)
+        else:
+            features.append(clean_txt)
+
+        # 태그 추출 (음질, 배터리 등)
+        for cat, words in {"음질": ["음질", "소리", "베이스"], "착용감": ["착용", "귀", "무게"], "연결": ["블루투스", "끊김"], "배터리": ["배터리", "충전"]}.items():
+            if any(w in clean_txt for w in words):
                 detected_tags.append(cat)
 
-    # 현실적 점수 반영 (긍정 가중치를 소폭 높임)
-    final_score = 75 + (pros_count * 1.5) - (cons_count * 2.0)
-    final_score = max(min(round(final_score), 100), 10)
-
-    # 분석 요약 메시지
-    reason_summary = []
-    if final_score >= 85: reason_summary.append("사용자들의 극찬이 많습니다. 믿고 구매하셔도 좋을 것 같네요.")
-    elif final_score >= 70: reason_summary.append("대체로 좋다는 평이 많지만, 몇몇 아쉬운 점은 체크해보세요.")
-    else: reason_summary.append("호불호가 갈리거나 특정 기능에 대한 불만이 확인됩니다.")
+    # 중복 제거 및 최종 선별 (내용이 겹치지 않게)
+    def finalize_list(lst, limit=4):
+        seen = set()
+        final = []
+        for item in lst:
+            short = item[:20] # 앞부분이 비슷하면 중복으로 간주
+            if short not in seen:
+                final.append(item[:120]) # 최대 120자 제한 (잘리지 않게)
+                seen.add(short)
+        return final[:limit]
 
     return {
-        "score": final_score, 
-        "pros_n": pros_count, 
-        "cons_n": cons_count,
-        "reason": reason_summary, 
-        "tags": [k for k, v in Counter(detected_tags).most_common(8)],
-        "pros_list": list(set(pros_details))[:5], 
-        "cons_list": list(set(cons_details))[:5],
-        "reviews": unique_snippets[:10]
+        "score": 70 + (len(pros_details) * 2) - (len(cons_details) * 3),
+        "tags": [k for k, v in Counter(detected_tags).most_common(5)],
+        "pros_list": finalize_list(pros_details),
+        "cons_list": finalize_list(cons_details),
+        "features": finalize_list(features, limit=2)
     }
