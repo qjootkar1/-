@@ -13,39 +13,40 @@ templates = Jinja2Templates(directory="templates")
 # 1. Gemini API 설정
 API_KEY = os.environ.get("GEMINI_API_KEY")
 genai.configure(api_key=API_KEY)
+model = genai.GenerativeModel("gemini-1.5-flash")
 
-# 2. 제미나이 모델 설정 (비판적 리뷰어 역할 부여)
-model = genai.GenerativeModel(
-    model_name="gemini-1.5-flash",
-    system_instruction=(
-        "당신은 실시간 수집된 데이터를 바탕으로 제품을 분석하는 10년 경력의 전문 리뷰어입니다. "
-        "제공된 로우 데이터에서 광고와 노이즈를 걸러내고, 제품의 품질, 성능, 가성비를 분석하여 "
-        "엄격하게 10점 만점의 점수를 매기고 추천/비추천 대상을 명확히 구분하세요."
-    )
-)
-
-# 3. FastAPI 단계의 1차 필터링 함수 (노이즈 제거)
-def filter_and_clean_data(raw_texts, product_name):
+# 2. 강력한 데이터 필터링 (제품명 일치 여부 및 노이즈 제거)
+def strict_filter_data(raw_texts, product_name):
     filtered = []
-    # 제거할 노이즈 키워드
-    noise = ["광고", "협찬", "쿠팡", "제휴", "이벤트", "판매", "무료배송"]
+    # 검색어에서 핵심 키워드 추출 (예: "아이폰 15 프로" -> ["아이폰", "15", "프로"])
+    search_keywords = [k for k in product_name.lower().split() if len(k) > 0]
+    
+    noise_keywords = ["광고", "협찬", "이벤트", "판매", "공구", "무료배송"]
     
     for text in raw_texts:
-        # 제품명이 포함되어 있고 광고가 아닌 문장만 필터링
-        if product_name.replace(" ", "") in text.replace(" ", ""):
-            if not any(word in text for word in noise):
-                # 특수문자 제거 및 줄바꿈 정리
-                clean = re.sub(r'\s+', ' ', text).strip()
-                if len(clean) > 30:  # 너무 짧은 문장은 정보 가치가 없어 제외
-                    filtered.append(clean)
-    
-    # 중복 제거 후 최대 15~20개로 제한하여 제미나이의 부하를 줄임
-    return list(set(filtered))[:20]
+        lower_text = text.lower()
+        
+        # [검증 1] 핵심 키워드가 최소 1개 이상 포함되어 있는지 확인 (제품 일치 확인)
+        # 만약 제품명이 "아이폰"인데 "갤럭시" 리뷰가 긁혔다면 여기서 걸러짐
+        if not any(keyword in lower_text for keyword in search_keywords):
+            continue
+            
+        # [검증 2] 광고성 키워드 제거
+        if any(noise in lower_text for noise in noise_keywords):
+            continue
+            
+        # 정제 및 저장
+        clean_text = re.sub(r'\s+', ' ', text).strip()
+        if len(clean_text) > 30:
+            filtered.append(clean_text)
+            
+    return list(set(filtered))[:15] # 중복 제거 후 최적의 15개 선정
 
-# 4. 실제 실시간 웹 크롤링 함수
+# 3. 실시간 크롤링 함수
 async def crawl_product_info(product_name: str):
-    # 구글 검색 결과에서 뉴스나 리뷰 요약문을 긁어옴
-    url = f"https://www.google.com/search?q={product_name}+실제+리뷰+특징+단점"
+    # 검색 정확도를 높이기 위해 검색어 조합 최적화
+    search_query = f"{product_name} 실제 사용 리뷰 단점 장점"
+    url = f"https://www.google.com/search?q={search_query}"
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
@@ -53,55 +54,58 @@ async def crawl_product_info(product_name: str):
     async with httpx.AsyncClient() as client:
         try:
             response = await client.get(url, headers=headers, timeout=10.0)
-            if response.status_code != 200:
-                return []
-            
             soup = BeautifulSoup(response.text, "html.parser")
-            # 검색 결과의 스니펫(요약 문구)들을 모두 수집
-            snippets = [tag.get_text() for tag in soup.find_all(['span', 'div']) if len(tag.get_text()) > 20]
+            # 검색 결과에서 유의미한 텍스트 블록 수집
+            snippets = [tag.get_text() for tag in soup.find_all(['span', 'div']) if len(tag.get_text()) > 35]
             return snippets
-        except Exception:
+        except:
             return []
 
-# 5. 메인 API 엔드포인트
+# 4. 분석 엔드포인트
 @app.post("/chat")
-async def analyze_product(user_input: str = Form(...)):
+async def handle_analysis(user_input: str = Form(...)):
     if not API_KEY:
-        return JSONResponse(content={"error": "GEMINI_API_KEY 설정이 필요합니다."}, status_code=500)
+        return JSONResponse(content={"error": "API 키가 설정되지 않았습니다."}, status_code=500)
 
     try:
-        # Step 1: 웹 크롤링 수행
+        # Step 1: 크롤링
         raw_data = await crawl_product_info(user_input)
 
-        # Step 2: FastAPI 파이썬 로직으로 1차 필터링 및 검수
-        refined_data = filter_and_clean_data(raw_data, user_input)
-        context = "\n".join(refined_data) if refined_data else "실시간 정보를 찾지 못했습니다. 일반적인 제품 지식으로 답변하세요."
-
-        # Step 3: 제미나이에게 최종 분석 요청 (사용자 의도 반영)
-        prompt = f"""
-        사용자 요청 제품: {user_input}
+        # Step 2: 파이썬에서 1차 검수 (제품 불일치 데이터 제거)
+        refined_data = strict_filter_data(raw_data, user_input)
         
-        [수집된 실시간 데이터]:
+        # Step 3: Gemini에게 전달할 데이터가 아예 없는 경우 처리
+        if not refined_data:
+            return {"answer": "죄송합니다. 입력하신 제품과 정확히 일치하는 신뢰할 수 있는 리뷰 데이터를 찾지 못했습니다. 제품명을 더 정확하게 입력해 주세요.", "data_info": "검증된 데이터 없음"}
+
+        context = "\n".join(refined_data)
+
+        # Step 4: Gemini에게 '데이터 검증 후 분석' 명령
+        prompt = f"""
+        사용자가 분석을 요청한 제품명: [{user_input}]
+        
+        아래는 웹에서 수집된 로우 데이터입니다:
+        ---
         {context}
+        ---
 
-        위 데이터를 바탕으로 다음 보고서를 작성하세요:
-        1. 제품 품질 및 퀄리티 평가: 소재, 마감, 내구성에 대해 언급할 것.
-        2. 10점 만점 점수표: (성능, 디자인, 가성비, 품질) 각 점수와 이유 기재.
-        3. 종합 총점: (위 점수들을 종합한 평균 점수)
-        4. 추천 대상: 이 제품을 사면 매우 만족할 사람들의 특징.
-        5. 비추천 대상: 이 제품을 사면 반드시 후회할 사람들과 그 이유.
-        6. 가성비 분석: 현재 시장 가격 대비 품질이 적절한가?
-
-        모든 답변은 매우 객관적이고 비판적이어야 하며, 광고성 말투를 배제하세요.
+        [지시사항]
+        1. 위 데이터 중 [{user_input}]와 관련 없는 제품의 정보가 있다면 무시하세요.
+        2. 오직 [{user_input}]에 대한 정보만 추출하여 다음 양식으로 분석하세요:
+           - ■ 제품 특징 및 품질: 마감, 소재, 핵심 기술
+           - ■ 주요 장점: 사용자들이 공통적으로 칭찬하는 점
+           - ■ 주요 단점: 실제 결함, 불편한 점, 비판적인 의견
+           - ■ 항목별 점수(10점 만점): 성능, 디자인, 가성비, 품질
+           - ■ 타겟 가이드: ✅추천(어떤 사람?), ❌비추천(어떤 사람?)
+        3. 만약 데이터가 충분치 않다면 지어내지 말고 아는 범위 내에서만 작성하세요.
         """
 
         response = model.generate_content(prompt)
         
         return {
             "answer": response.text,
-            "data_info": f"수집된 데이터 {len(raw_data)}개 중 {len(refined_data)}개를 검수하여 분석함."
+            "data_info": f"검증된 {len(refined_data)}개의 리뷰를 기반으로 분석함"
         }
-
     except Exception as e:
         return JSONResponse(content={"error": str(e)}, status_code=500)
 
