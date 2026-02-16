@@ -21,13 +21,21 @@ model = None
 if GEMINI_API_KEY:
     try:
         genai.configure(api_key=GEMINI_API_KEY)
-        # 404 에러 방지: 현재 사용 가능한 모델명을 실시간으로 조회하여 할당
-        available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        target = next((n for n in available_models if "1.5-flash" in n), "models/gemini-1.5-flash")
-        model = genai.GenerativeModel(model_name=target)
-        print(f"DEBUG: Active Model -> {target}")
+        # 최신 Gemini API 모델명 사용
+        # gemini-1.5-flash, gemini-1.5-pro, gemini-2.0-flash-exp 등 사용 가능
+        model_name = "gemini-1.5-flash-latest"  # 또는 "gemini-1.5-flash"
+        model = genai.GenerativeModel(model_name=model_name)
+        print(f"DEBUG: Active Model -> {model_name}")
+        print("Gemini 모델 초기화 성공")
     except Exception as e:
-        print(f"Init Error: {e}")
+        print(f"Gemini 초기화 오류: {e}")
+        # 대체 모델로 재시도
+        try:
+            model_name = "gemini-1.5-flash"
+            model = genai.GenerativeModel(model_name=model_name)
+            print(f"DEBUG: Fallback Model -> {model_name}")
+        except Exception as e2:
+            print(f"Fallback 모델도 실패: {e2}")
 
 # --- 1차: Python 필터링 (검색어 일치율 70% 이상 검수) ---
 async def fetch_search_data(product_name: str):
@@ -106,8 +114,23 @@ async def handle_analysis(user_input: str = Form(...)):
         - 수집된 모든 근거를 바탕으로 이 제품의 구매 가치에 대한 최종 판단을 요약하세요.
         """
         
-        response = model.generate_content(prompt)
-        return {"answer": response.text, "data_info": f"이중 검증 완료 (고순도 데이터 {len(refined_data)}건 분석)"}
+        response = model.generate_content(
+            prompt,
+            generation_config=genai.types.GenerationConfig(
+                temperature=0.7,
+                max_output_tokens=2048,
+            )
+        )
+        
+        # 응답 확인 및 안전한 텍스트 추출
+        if hasattr(response, 'text'):
+            result_text = response.text
+        elif hasattr(response, 'parts'):
+            result_text = ''.join([part.text for part in response.parts if hasattr(part, 'text')])
+        else:
+            result_text = str(response)
+            
+        return {"answer": result_text, "data_info": f"이중 검증 완료 (고순도 데이터 {len(refined_data)}건 분석)"}
 
     except Exception as e:
         return JSONResponse(content={"error": f"분석 중 오류 발생: {str(e)}"}, status_code=500)
