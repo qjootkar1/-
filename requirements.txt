@@ -1,6 +1,6 @@
-fastapi
-uvicorn[standard]
-google-generativeai>=0.8.0
-jinja2
-python-multipart
-httpx
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+python-multipart==0.0.20
+jinja2==3.1.4
+httpx==0.28.1
+google-generativeai==0.8.3
