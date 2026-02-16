@@ -47,16 +47,63 @@ if SERPER_API_KEY:
 else:
     print("⚠️ SERPER_API_KEY 환경 변수가 없습니다 (검색 기능 비활성화)")
 
-# ============ Gemini 모델 초기화 (최적화) ============
+# ============ Gemini 모델 초기화 (최적화 + Fallback) ============
 
 model = None
 if GEMINI_API_KEY:
     try:
         genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel("gemini-1.5-flash")
-        print("✅ Gemini 모델 초기化 성공: gemini-1.5-flash")
+        
+        # 여러 모델명 시도 (404 에러 방지)
+        model_candidates = [
+            "gemini-2.0-flash-exp",           # 최신 실험 버전
+            "gemini-1.5-flash-002",           # 안정 버전 (숫자 버전)
+            "gemini-1.5-flash-latest",        # Latest 태그
+            "gemini-1.5-pro-latest",          # Pro 버전
+            "models/gemini-1.5-flash",        # models/ 프리픽스
+            "models/gemini-2.0-flash-exp",    # models/ 프리픽스 실험
+            "gemini-pro",                     # 레거시 이름
+        ]
+        
+        model_initialized = False
+        for model_name in model_candidates:
+            try:
+                print(f"🔄 모델 시도 중: {model_name}")
+                test_model = genai.GenerativeModel(model_name)
+                # 간단한 테스트로 모델 작동 확인
+                test_model.count_tokens("test")
+                model = test_model
+                print(f"✅ Gemini 모델 초기화 성공: {model_name}")
+                model_initialized = True
+                break
+            except Exception as e:
+                print(f"⚠️ {model_name} 실패: {str(e)[:80]}")
+                continue
+        
+        if not model_initialized:
+            # 마지막 시도: 사용 가능한 모델 자동 탐지
+            print("🔍 사용 가능한 모델 자동 탐지 중...")
+            try:
+                available_models = []
+                for m in genai.list_models():
+                    if 'generateContent' in m.supported_generation_methods:
+                        available_models.append(m.name)
+                
+                if available_models:
+                    # Flash 모델 우선, 없으면 첫 번째 모델 사용
+                    selected = next((m for m in available_models if 'flash' in m.lower()), available_models[0])
+                    model = genai.GenerativeModel(selected)
+                    print(f"✅ Gemini 모델 자동 선택 성공: {selected}")
+                    print(f"   (사용 가능 모델: {', '.join(available_models[:3])}...)")
+                else:
+                    print("❌ 사용 가능한 모델이 없습니다")
+                    model = None
+            except Exception as list_error:
+                print(f"❌ 모델 탐지 실패: {list_error}")
+                model = None
+                
     except Exception as e:
-        print(f"❌ Gemini 초기화 실패: {e}")
+        print(f"❌ Gemini 초기화 최종 실패: {e}")
         model = None
 
 # ============ 보안 및 검증 함수 ============
