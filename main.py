@@ -16,26 +16,65 @@ app = FastAPI()
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SERPER_API_KEY = os.environ.get("SERPER_API_KEY")
 
-# --- [에러 해결] Gemini 모델 동적 설정 ---
+# --- [에러 해결] Gemini 모델 설정 (완전 재작성) ---
 model = None
 if GEMINI_API_KEY:
     try:
         genai.configure(api_key=GEMINI_API_KEY)
-        # 최신 Gemini API 모델명 사용
-        # gemini-1.5-flash, gemini-1.5-pro, gemini-2.0-flash-exp 등 사용 가능
-        model_name = "gemini-1.5-flash-latest"  # 또는 "gemini-1.5-flash"
-        model = genai.GenerativeModel(model_name=model_name)
-        print(f"DEBUG: Active Model -> {model_name}")
-        print("Gemini 모델 초기화 성공")
-    except Exception as e:
-        print(f"Gemini 초기화 오류: {e}")
-        # 대체 모델로 재시도
+        
+        # 방법 1: 사용 가능한 모델 리스트 확인 후 선택
         try:
-            model_name = "gemini-1.5-flash"
-            model = genai.GenerativeModel(model_name=model_name)
-            print(f"DEBUG: Fallback Model -> {model_name}")
-        except Exception as e2:
-            print(f"Fallback 모델도 실패: {e2}")
+            available_models = genai.list_models()
+            print("=== 사용 가능한 Gemini 모델 목록 ===")
+            
+            suitable_model = None
+            for m in available_models:
+                print(f"모델명: {m.name}, 지원 메소드: {m.supported_generation_methods}")
+                # generateContent를 지원하는 모델만 선택
+                if 'generateContent' in m.supported_generation_methods:
+                    # flash 모델 우선 선택 (속도가 빠름)
+                    if 'flash' in m.name.lower():
+                        suitable_model = m.name
+                        break
+                    elif suitable_model is None:  # flash가 없으면 첫 번째 사용 가능한 모델
+                        suitable_model = m.name
+            
+            if suitable_model:
+                model = genai.GenerativeModel(model_name=suitable_model)
+                print(f"✅ 선택된 모델: {suitable_model}")
+            else:
+                print("⚠️ generateContent를 지원하는 모델을 찾지 못함")
+        
+        except Exception as list_error:
+            print(f"⚠️ 모델 리스트 조회 실패: {list_error}")
+            
+            # 방법 2: 알려진 모델명 직접 시도 (fallback)
+            fallback_models = [
+                "gemini-1.5-flash",
+                "gemini-1.5-pro", 
+                "gemini-pro"
+            ]
+            
+            for model_name in fallback_models:
+                try:
+                    test_model = genai.GenerativeModel(model_name=model_name)
+                    # 간단한 테스트
+                    test_model.generate_content("test", 
+                        generation_config=genai.types.GenerationConfig(max_output_tokens=10))
+                    model = test_model
+                    print(f"✅ Fallback 모델 선택: {model_name}")
+                    break
+                except Exception as e:
+                    print(f"❌ {model_name} 실패: {str(e)[:100]}")
+                    continue
+        
+        if model is None:
+            print("❌ 모든 모델 초기화 실패. API 키를 확인하세요.")
+            
+    except Exception as e:
+        print(f"❌ Gemini API 설정 오류: {e}")
+else:
+    print("❌ GEMINI_API_KEY 환경 변수가 설정되지 않았습니다.")
 
 # --- 1차: Python 필터링 (검색어 일치율 70% 이상 검수) ---
 async def fetch_search_data(product_name: str):
@@ -68,7 +107,17 @@ def filter_exact_match(raw_texts, product_name):
 # --- 2차: 제미나이 정밀 분석 및 이중 검증 ---
 @app.post("/chat")
 async def handle_analysis(user_input: str = Form(...)):
-    if not model: return JSONResponse(content={"error": "AI 모델 설정 실패"}, status_code=500)
+    if not GEMINI_API_KEY:
+        return JSONResponse(
+            content={"error": "GEMINI_API_KEY 환경 변수가 설정되지 않았습니다."}, 
+            status_code=500
+        )
+    
+    if not model:
+        return JSONResponse(
+            content={"error": "Gemini AI 모델을 초기화할 수 없습니다. API 키를 확인하거나 서버 로그를 확인해주세요."}, 
+            status_code=500
+        )
     
     try:
         raw_data = await fetch_search_data(user_input)
