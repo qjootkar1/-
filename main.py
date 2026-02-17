@@ -1,482 +1,222 @@
-import os
-import re
+import os, re, asyncio, traceback, hashlib
 from datetime import datetime, timedelta
-from typing import Optional, List
+from typing import Optional, List, Dict
 import httpx
 from fastapi import FastAPI, Request, Form, HTTPException
 from fastapi.templating import Jinja2Templates
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from functools import lru_cache
 import google.generativeai as genai
 
-# ============ 설정 및 초기화 ============
+# --- [1. 설정 및 상수] ---
+CACHE_SIZE   = 30
+CACHE_TTL    = timedelta(hours=2)
+PAGE_FETCH_N = 20
+PAGE_CONCUR  = 10
+PAGE_CHARS   = 5000
+CTX_LIMIT    = 30000
+MAX_FILTERED = 60
+MIN_LEN      = 40
 
-# 경로 설정 (Render 환경 최적화)
-current_dir = os.path.dirname(os.path.abspath(__file__))
-template_path = os.path.join(current_dir, "templates")
-templates = Jinja2Templates(directory=template_path)
+# [수정] _RE_HTML의 마지막 '|' 제거 (성능 저하 방지)
+_RE_DANGER = re.compile(r'<script|javascript:|onerror=|onclick=|onload=|<iframe|DROP\s+TABLE', re.I)
+_RE_CLEAN  = re.compile(r'[^a-zA-Z0-9가-힣\s\-\.]')
+_RE_SPACE  = re.compile(r'\s+')
+_RE_HTML   = re.compile(r'<script[^>]*>.*?</script>|<style[^>]*>.*?</style>', re.DOTALL | re.I)
+_RE_TAG    = re.compile(r'<[^>]+>')
+_RE_ENT    = re.compile(r'&(?:amp|lt|gt|quot|nbsp|apos);')
+_RE_NUMS   = re.compile(r'\d+')
 
-app = FastAPI(
-    title="AI 제품 분석기",
-    description="실사용 리뷰 기반 제품 분석 서비스",
-    version="2.0"
-)
+# --- [2. 앱 및 리소스 초기화] ---
+app = FastAPI(title="AI 제품 분석기 V4.1", version="4.1")
+templates = Jinja2Templates(directory=os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates"))
 
-# CORS 설정 (보안)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # 프로덕션에서는 특정 도메인만 허용
-    allow_credentials=True,
-    allow_methods=["GET", "POST"],
-    allow_headers=["*"],
-)
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True,
+                   allow_methods=["GET", "POST"], allow_headers=["*"])
 
-# 환경 변수
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-SERPER_API_KEY = os.environ.get("SERPER_API_KEY")
+GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "")
+SERPER_KEY = os.environ.get("SERPER_API_KEY", "")
 
-# API 키 검증
-if GEMINI_API_KEY:
-    print(f"✅ GEMINI_API_KEY 확인됨: {GEMINI_API_KEY[:10]}...")
-else:
-    print("❌ GEMINI_API_KEY 환경 변수가 설정되지 않았습니다!")
+class GlobalState:
+    model: Optional[genai.GenerativeModel] = None
+    http: Optional[httpx.AsyncClient] = None
+    sem: Optional[asyncio.Semaphore] = None
+    cache: Dict = {}
+    cache_ts: Dict = {}
 
-if SERPER_API_KEY:
-    print(f"✅ SERPER_API_KEY 확인됨: {SERPER_API_KEY[:10]}...")
-else:
-    print("⚠️ SERPER_API_KEY 환경 변수가 없습니다 (검색 기능 비활성화)")
+state = GlobalState()
 
-# ============ Gemini 모델 초기화 (최적화 + Fallback) ============
-
-model = None
-if GEMINI_API_KEY:
-    try:
-        genai.configure(api_key=GEMINI_API_KEY)
-        
-        # 여러 모델명 시도 (404 에러 방지)
-        model_candidates = [
-            "gemini-2.0-flash-exp",           # 최신 실험 버전
-            "gemini-1.5-flash-002",           # 안정 버전 (숫자 버전)
-            "gemini-1.5-flash-latest",        # Latest 태그
-            "gemini-1.5-pro-latest",          # Pro 버전
-            "models/gemini-1.5-flash",        # models/ 프리픽스
-            "models/gemini-2.0-flash-exp",    # models/ 프리픽스 실험
-            "gemini-pro",                     # 레거시 이름
-        ]
-        
-        model_initialized = False
-        for model_name in model_candidates:
+@app.on_event("startup")
+async def startup():
+    print(f"Starting UP: GEMINI {'OK' if GEMINI_KEY else 'NO'} | SERPER {'OK' if SERPER_KEY else 'NO'}")
+    state.http = httpx.AsyncClient(
+        timeout=httpx.Timeout(10.0, connect=5.0),
+        limits=httpx.Limits(max_keepalive_connections=20, max_connections=50),
+        follow_redirects=True,
+        headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    )
+    state.sem = asyncio.Semaphore(PAGE_CONCUR)
+    if GEMINI_KEY:
+        genai.configure(api_key=GEMINI_KEY)
+        for m_name in ["gemini-2.0-flash-exp", "gemini-1.5-flash"]:
             try:
-                print(f"🔄 모델 시도 중: {model_name}")
-                test_model = genai.GenerativeModel(model_name)
-                # 간단한 테스트로 모델 작동 확인
-                test_model.count_tokens("test")
-                model = test_model
-                print(f"✅ Gemini 모델 초기화 성공: {model_name}")
-                model_initialized = True
-                break
-            except Exception as e:
-                print(f"⚠️ {model_name} 실패: {str(e)[:80]}")
-                continue
-        
-        if not model_initialized:
-            # 마지막 시도: 사용 가능한 모델 자동 탐지
-            print("🔍 사용 가능한 모델 자동 탐지 중...")
-            try:
-                available_models = []
-                for m in genai.list_models():
-                    if 'generateContent' in m.supported_generation_methods:
-                        available_models.append(m.name)
-                
-                if available_models:
-                    # Flash 모델 우선, 없으면 첫 번째 모델 사용
-                    selected = next((m for m in available_models if 'flash' in m.lower()), available_models[0])
-                    model = genai.GenerativeModel(selected)
-                    print(f"✅ Gemini 모델 자동 선택 성공: {selected}")
-                    print(f"   (사용 가능 모델: {', '.join(available_models[:3])}...)")
-                else:
-                    print("❌ 사용 가능한 모델이 없습니다")
-                    model = None
-            except Exception as list_error:
-                print(f"❌ 모델 탐지 실패: {list_error}")
-                model = None
-                
-    except Exception as e:
-        print(f"❌ Gemini 초기화 최종 실패: {e}")
-        model = None
+                m = genai.GenerativeModel(m_name)
+                m.count_tokens("ping")
+                state.model = m
+                print(f"Gemini Ready: {m_name}"); break
+            except: continue
 
-# ============ 보안 및 검증 함수 ============
+@app.on_event("shutdown")
+async def shutdown():
+    if state.http:
+        await state.http.aclose()
 
-def validate_input(text: str) -> bool:
-    """입력 검증 - XSS, SQL Injection 방지"""
-    if not text or len(text.strip()) == 0:
-        return False
-    if len(text) > 100:  # 제품명은 100자 이하
-        return False
-    # 위험한 문자 패턴 체크
-    dangerous_patterns = ['<script', 'javascript:', 'onerror=', 'onclick=', '--', ';', 'DROP', 'DELETE']
-    text_lower = text.lower()
-    return not any(pattern in text_lower for pattern in dangerous_patterns)
+# --- [3. 유틸리티 함수] ---
+def validate_input(text: str) -> Optional[str]:
+    if not text or len(text.strip()) < 2 or len(text) > 80: return None
+    if _RE_DANGER.search(text): return None
+    return _RE_SPACE.sub(' ', _RE_CLEAN.sub('', text)).strip()
 
-def sanitize_input(text: str) -> str:
-    """입력 정제 - 특수문자 제거"""
-    # 기본 문자, 숫자, 공백, 하이픈만 허용
-    return re.sub(r'[^a-zA-Z0-9가-힣\s\-]', '', text).strip()
-
-# ============ 캐싱 (성능 최적화) ============
-
-# 간단한 메모리 캐시 (최근 10개 결과 저장)
-_cache = {}
-_cache_timestamps = {}
-CACHE_DURATION = timedelta(hours=1)  # 1시간 캐시
-
-def get_from_cache(key: str) -> Optional[dict]:
-    """캐시에서 결과 가져오기"""
-    if key in _cache:
-        timestamp = _cache_timestamps.get(key)
-        if timestamp and datetime.now() - timestamp < CACHE_DURATION:
-            print(f"💾 캐시 히트: {key}")
-            return _cache[key]
-        else:
-            # 만료된 캐시 제거
-            del _cache[key]
-            del _cache_timestamps[key]
+def get_cache(k):
+    h = hashlib.md5(k.lower().encode()).hexdigest()
+    if h in state.cache and (datetime.now() - state.cache_ts[h] < CACHE_TTL):
+        return state.cache[h]
     return None
 
-def save_to_cache(key: str, value: dict):
-    """결과를 캐시에 저장 (최대 10개)"""
-    if len(_cache) >= 10:
-        # 가장 오래된 항목 제거 (LRU)
-        oldest_key = min(_cache_timestamps, key=_cache_timestamps.get)
-        del _cache[oldest_key]
-        del _cache_timestamps[oldest_key]
-    
-    _cache[key] = value
-    _cache_timestamps[key] = datetime.now()
-    print(f"💾 캐시 저장: {key}")
+def set_cache(k, v):
+    h = hashlib.md5(k.lower().encode()).hexdigest()
+    if len(state.cache) >= CACHE_SIZE:
+        oldest = min(state.cache_ts, key=state.cache_ts.get)
+        state.cache.pop(oldest); state.cache_ts.pop(oldest)
+    state.cache[h] = v; state.cache_ts[h] = datetime.now()
 
-# ============ 검색 및 필터링 (최적화) ============
+def clean_html(raw: str) -> str:
+    t = _RE_HTML.sub(' ', raw)
+    t = _RE_TAG.sub(' ', t)
+    t = _RE_ENT.sub(' ', t)
+    return _RE_SPACE.sub(' ', t).strip()
 
-# httpx 클라이언트 재사용 (연결 풀링)
-http_client = httpx.AsyncClient(
-    timeout=httpx.Timeout(12.0),
-    limits=httpx.Limits(max_keepalive_connections=5, max_connections=10)
-)
-
-async def fetch_search_data(product_name: str) -> List[str]:
-    """검색 데이터 수집 (최신 실사용 후기 우선)"""
-    if not SERPER_API_KEY:
-        return []
-    
-    url = "https://google.serper.dev/search"
-    headers = {'X-API-KEY': SERPER_API_KEY, 'Content-Type': 'application/json'}
-    
-    # 여러 검색 쿼리로 다양한 소스 수집
+# --- [4. 데이터 수집 로직] ---
+async def fetch_search_data(product: str) -> List[str]:
+    if not SERPER_KEY: return []
     queries = [
-        f'"{product_name}" 구매 후기 사용기',  # 실제 구매자 후기
-        f'"{product_name}" 실사용 리뷰 장단점',  # 실사용 리뷰
-        f'"{product_name}" 한달 사용 후기',  # 장기 사용 후기
+        f'"{product}" 실사용 후기 단점', f'"{product}" 리뷰 장단점',
+        f'"{product}" site:clien.net OR site:ppomppu.co.kr',
+        f'"{product}" review pros cons'
     ]
     
-    all_snippets = []
-    
-    for query in queries:
-        data = {
-            "q": query,
-            "gl": "kr",
-            "hl": "ko",
-            "num": 10,  # 각 쿼리당 10개씩
-            "tbs": "qdr:m3"  # 최근 3개월 내 결과만 (실제 출시 후기)
-        }
-        
+    async def search(q):
         try:
-            response = await http_client.post(url, headers=headers, json=data)
-            response.raise_for_status()
-            results = response.json().get("organic", [])
-            
-            for item in results:
-                snippet = item.get("snippet", "")
-                # 출시 전 예측 기사 필터링
-                if snippet and not any(word in snippet for word in ["예상", "전망", "출시 예정", "공개될", "기대"]):
-                    all_snippets.append(snippet)
-            
-        except Exception as e:
-            print(f"⚠️ 검색 오류 ({query[:30]}...): {e}")
-            continue
+            r = await state.http.post("https://google.serper.dev/search", 
+                json={"q": q, "gl": "kr", "hl": "ko", "num": 12}, 
+                headers={'X-API-KEY': SERPER_KEY}, timeout=8.0)
+            return r.json()
+        except: return {}
+
+    results = await asyncio.gather(*[search(q) for q in queries])
+    unique_links = {}
+    extra_texts = []
     
-    print(f"📊 총 {len(all_snippets)}개 스니펫 수집")
-    return all_snippets[:25]  # 최대 25개까지
+    for data in results:
+        for item in data.get("organic", []):
+            link = item.get("link")
+            if link and link not in unique_links:
+                unique_links[link] = item
+        if "answerBox" in data: extra_texts.append(str(data["answerBox"]))
 
-# 정규식 컴파일 (재사용을 위해 전역으로)
-WHITESPACE_PATTERN = re.compile(r'\s+')
-NUMBER_PATTERN = re.compile(r'\d+')
+    async def fetch_body(item):
+        url = item.get("link", "")
+        if not url or any(x in url for x in ["youtube.com", "instagram.com", "facebook.com"]): return ""
+        async with state.sem:
+            try:
+                r = await state.http.get(url, timeout=7.0)
+                if r.status_code == 200:
+                    cleaned = clean_html(r.text[:20000])
+                    return cleaned[:PAGE_CHARS] if len(cleaned) > 150 else ""
+            except: pass
+        return ""
 
-def filter_exact_match(raw_texts: List[str], product_name: str) -> List[str]:
-    """정확한 제품명 필터링 (최적화)"""
-    if not raw_texts or not product_name:
-        return []
-    
-    filtered = []
-    product_lower = product_name.lower().strip()
-    keywords = [k.lower() for k in product_name.split() if len(k) > 1]
-    
-    if not keywords:
-        return raw_texts[:5]
-    
-    # 제품명에 숫자가 있는지 미리 확인
-    has_digits = any(char.isdigit() for char in product_name)
-    product_numbers = set(NUMBER_PATTERN.findall(product_name)) if has_digits else set()
-    
-    # 스팸 키워드 (소문자로 미리 변환)
-    spam_keywords = {"로그인", "장바구니", "쿠키", "404", "error", "페이지를 찾을 수 없습니다"}
-    
-    for text in raw_texts:
-        text_lower = text.lower()
-        
-        # 스팸 체크 (먼저 수행 - 빠른 제외)
-        if any(spam in text_lower for spam in spam_keywords):
-            continue
-        
-        # 정확한 제품명 매칭
-        has_exact_product = product_lower in text_lower
-        
-        # 키워드 매칭률
-        match_count = sum(1 for kw in keywords if kw in text_lower)
-        match_ratio = match_count / len(keywords)
-        
-        # 숫자 매칭 (필요한 경우에만)
-        exclude = False
-        if has_digits and product_numbers:
-            text_numbers = set(NUMBER_PATTERN.findall(text))
-            if not product_numbers.issubset(text_numbers):
-                exclude = True
-        
-        # 필터링 조건
-        if not exclude and (has_exact_product or match_ratio >= 0.7):
-            clean_text = WHITESPACE_PATTERN.sub(' ', text).strip()
-            if clean_text and len(clean_text) > 20:  # 너무 짧은 텍스트 제외
-                filtered.append(clean_text)
-    
-    # 중복 제거 (순서 유지)
-    seen = set()
-    unique_filtered = []
-    for item in filtered:
-        if item not in seen:
-            seen.add(item)
-            unique_filtered.append(item)
-    
-    result = unique_filtered[:15]
-    print(f"필터링 결과: {len(raw_texts)}개 → {len(result)}개")
-    return result
+    snippets = [i["snippet"] for i in unique_links.values() if i.get("snippet")]
+    bodies = await asyncio.gather(*[fetch_body(i) for i in list(unique_links.values())[:PAGE_FETCH_N]])
+    return snippets + [b for b in bodies if b] + extra_texts
 
-# ============ 프롬프트 템플릿 (재사용) ============
+def filter_data(raw: List[str], product: str) -> List[str]:
+    p_lower = product.lower()
+    p_nums = set(_RE_NUMS.findall(product))
+    result, seen = [], set()
+    for text in raw:
+        t_lower = text.lower()
+        if len(text) < MIN_LEN or "로그인" in t_lower: continue
+        if p_nums and not p_nums.issubset(set(_RE_NUMS.findall(text))): continue
+        if p_lower not in t_lower and not any(tk in t_lower for tk in p_lower.split()): continue
+        fingerprint = text[:60]
+        if fingerprint not in seen:
+            seen.add(fingerprint)
+            result.append(_RE_SPACE.sub(' ', text).strip())
+    return result[:MAX_FILTERED]
 
-ANALYSIS_PROMPT_TEMPLATE = """당신은 제품 분석 전문가입니다.
-
-**중요 지침:**
-- 아래 제공된 "실사용 리뷰 데이터"만을 사용하여 분석하세요
-- 당신의 사전 지식이나 학습 데이터는 절대 사용하지 마세요
-- 데이터에 없는 정보는 "확인 불가" 또는 "데이터 부족"이라고 명시하세요
-- 출시 예정, 예상, 전망 등의 추측성 표현은 사용하지 마세요
-
-제품: [{product_name}]
-
-실사용 리뷰 데이터:
-{context}
-
----
-**분석 시 반드시 지켜야 할 원칙:**
-1. 위 데이터에서 [{product_name}]과 정확히 일치하는 정보만 사용
-2. 실제 사용자 경험이 담긴 내용만 인용
-3. 출시 전 예측이나 스펙 비교는 배제
-4. 데이터가 부족하면 "실사용 데이터 부족"이라고 명시
-
----
-**아래 형식으로 상세한 분석 리포트를 작성하세요:**
-
-## 📊 1. 데이터 수집 상태
-[수집된 데이터의 질과 양을 평가. 실사용 후기 비율, 신뢰도 등을 2-3문장으로 명시]
-
-## 🔍 2. 제품 핵심 특징
-[실사용 후기에서 언급된 실제 특징만 5-6문장으로 설명. 출시 전 예측은 제외]
-
-## ✅ 3. 주요 장점
-**장점 1: [제목]**
-[실사용자들의 구체적 만족 사례 3-4문장]
-
-**장점 2: [제목]**
-[실사용자들의 구체적 만족 사례 3-4문장]
-
-**장점 3: [제목]**
-[실사용자들의 구체적 만족 사례 3-4문장]
-
-## ⚠️ 4. 주요 단점
-**단점 1: [제목]**
-[실사용자들이 겪은 구체적 문제 3-4문장]
-
-**단점 2: [제목]**
-[실사용자들이 겪은 구체적 문제 3-4문장]
-
-**단점 3: [제목]**
-[실사용자들이 겪은 구체적 문제 3-4문장]
-
-## 📈 5. 항목별 평가
-- **성능**: X/10 - [실사용 후기 기반 1-2문장]
-- **디자인/마감**: X/10 - [실사용 후기 기반 1-2문장]
-- **가성비**: X/10 - [실사용 후기 기반 1-2문장]
-- **품질 안정성**: X/10 - [실사용 후기 기반 1-2문장]
-- **사용자 만족도**: X/10 - [실사용 후기 기반 1-2문장]
-
-### 종합 점수: X.X/10
-
-## 🎯 6. 구매 추천 가이드
-### ✅ 강력 추천
-[실사용 데이터 기반 추천 대상 3-4가지, 각 2-3문장]
-
-### ❌ 비추천
-[실사용 데이터 기반 비추천 대상 3-4가지, 각 2-3문장]
-
-## 💭 7. 전문가 최종 결론
-[실사용 후기를 종합한 최종 평가 5-6문장. 추측 배제, 데이터 기반으로만 작성]
-
----
-**다시 한번 강조: 위 "실사용 리뷰 데이터"에 명시된 내용만 사용하세요. 당신의 사전 지식은 사용하지 마세요.**"""
-
-# ============ 메인 분석 엔드포인트 ============
+# --- [5. 메인 핸들러] ---
+PROMPT_TEMPLATE = """당신은 소비자 전문 제품 분석가입니다. [분석 제품]: {product}
+[데이터]: {context}
+위 리뷰 데이터를 바탕으로 {product}의 장단점을 심층 분석해 주세요. 
+반드시 실사용자의 부정적인 피드백을 포함하고, 데이터가 부족하면 '확인 불가'라고 명시하세요."""
 
 @app.post("/chat")
 async def handle_analysis(user_input: str = Form(...)):
-    """제품 분석 메인 엔드포인트 (최적화)"""
-    
-    # 1. 입력 검증
-    if not validate_input(user_input):
-        raise HTTPException(status_code=400, detail="유효하지 않은 입력입니다.")
-    
-    # 2. 입력 정제
-    clean_input = sanitize_input(user_input)
-    if not clean_input:
-        raise HTTPException(status_code=400, detail="제품명을 입력해주세요.")
-    
-    # 3. API 키 확인
-    if not GEMINI_API_KEY or not model:
-        return JSONResponse(
-            content={"error": "AI 모델을 사용할 수 없습니다. 관리자에게 문의하세요."},
-            status_code=503
-        )
-    
-    # 4. 캐시 확인
-    cache_key = clean_input.lower()
-    cached_result = get_from_cache(cache_key)
-    if cached_result:
-        return cached_result
-    
+    product = validate_input(user_input)
+    if not product: raise HTTPException(400, "잘못된 입력입니다.")
+    if not state.model: return JSONResponse({"error": "AI 준비 중"}, status_code=503)
+
+    if cached := get_cache(product): return cached
+
     try:
-        # 5. 데이터 수집
-        raw_data = await fetch_search_data(clean_input)
-        refined_data = filter_exact_match(raw_data, clean_input)
+        raw = await fetch_search_data(product)
+        filtered = filter_data(raw, product)
         
-        # 6. 데이터 부족 처리
-        if not refined_data:
-            result = {
-                "answer": f"""## ⚠️ 데이터 수집 실패
+        if not filtered:
+            return {"answer": f"'{product}'에 대한 실사용 리뷰 데이터를 찾지 못했습니다.", "data_info": "0건"}
 
-**'{clean_input}'에 대한 신뢰할 수 있는 실사용 리뷰를 찾지 못했습니다.**
+        filtered.sort(key=len, reverse=True)
+        parts, total_len = [], 0
+        for i, txt in enumerate(filtered):
+            chunk = f"[{i+1}] {txt}\n"
+            if total_len + len(chunk) > CTX_LIMIT: break
+            parts.append(chunk); total_len += len(chunk)
+            
+        context = "".join(parts)
+        prompt = PROMPT_TEMPLATE.format(product=product, context=context)
+        
+        # [수정] Gemini 응답 추출 로직 강화 (IndexError 및 Safety 차단 방어)
+        response = state.model.generate_content(prompt)
+        answer = "분석 결과를 생성할 수 없습니다."
+        
+        try:
+            # 정상적인 텍스트 응답 시도
+            if response.candidates and len(response.candidates) > 0:
+                # finish_reason 3은 SAFETY(차단)를 의미함
+                if response.candidates[0].finish_reason != 3:
+                    answer = response.text
+                else:
+                    # 차단되었더라도 일부 텍스트 파트가 있다면 수집
+                    parts_text = [p.text for p in response.candidates[0].content.parts if hasattr(p, 'text')]
+                    answer = "".join(parts_text) if parts_text else "안전 정책에 의해 일부 내용이 차단되었습니다."
+        except (ValueError, AttributeError, IndexError):
+            # fallback: response.text 접근 불가 시 후보군 재탐색
+            if response.candidates and response.candidates[0].content.parts:
+                answer = "".join(p.text for p in response.candidates[0].content.parts if hasattr(p, 'text'))
 
-가능한 원인:
-- 📅 최근 출시된 제품으로 아직 리뷰가 충분하지 않음
-- 🔍 제품명이 정확하지 않거나 오타가 있을 수 있음
-- 🌐 해당 제품의 온라인 리뷰가 부족함
+        res = {"answer": answer, "data_info": f"분석된 리뷰: {len(parts)}건"}
+        set_cache(product, res)
+        return res
 
-**추천 조치:**
-1. 제품의 정확한 모델명을 다시 확인해주세요
-2. 브랜드명과 함께 검색해보세요 (예: "삼성 갤럭시 A56")
-3. 출시된 지 얼마 안 된 제품이라면 시간이 지난 후 다시 시도해주세요
-""",
-                "data_info": "검증된 데이터 없음"
-            }
-            save_to_cache(cache_key, result)
-            return result
-        
-        # 7. Context 최적화 (너무 길면 잘라내기)
-        context = "\n".join([f"[{i+1}] {t[:500]}" for i, t in enumerate(refined_data)])
-        if len(context) > 8000:  # 약 2000 토큰
-            context = context[:8000] + "\n...(이하 생략)"
-        
-        # 8. 프롬프트 생성
-        prompt = ANALYSIS_PROMPT_TEMPLATE.format(
-            product_name=clean_input,
-            context=context
-        )
-        
-        # 9. Gemini API 호출 (최적화된 설정)
-        response = model.generate_content(
-            prompt,
-            generation_config=genai.types.GenerationConfig(
-                temperature=0.7,
-                max_output_tokens=8192,
-                top_p=0.95,
-                top_k=40,
-            ),
-            safety_settings=[
-                {"category": cat, "threshold": "BLOCK_NONE"}
-                for cat in [
-                    "HARM_CATEGORY_HARASSMENT",
-                    "HARM_CATEGORY_HATE_SPEECH",
-                    "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-                    "HARM_CATEGORY_DANGEROUS_CONTENT"
-                ]
-            ]
-        )
-        
-        # 10. 응답 추출
-        result_text = response.text if hasattr(response, 'text') else str(response)
-        
-        # 11. 결과 패키징
-        result = {
-            "answer": result_text,
-            "data_info": f"✅ 분석 완료 (신뢰도 높은 데이터 {len(refined_data)}건 기반)"
-        }
-        
-        # 12. 캐시 저장
-        save_to_cache(cache_key, result)
-        
-        return result
-        
     except Exception as e:
-        import traceback
-        error_detail = traceback.format_exc()
-        print(f"❌ 분석 오류:\n{error_detail}")
-        
-        return JSONResponse(
-            content={
-                "error": "분석 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.",
-                "error_type": type(e).__name__
-            },
-            status_code=500
-        )
+        print(traceback.format_exc())
+        return JSONResponse({"error": "분석 중 오류 발생", "detail": str(e)}, status_code=500)
 
-# ============ 웹 인터페이스 ============
-
-@app.get("/", response_class=HTMLResponse)
+@app.get("/")
 async def index(request: Request):
-    """메인 페이지"""
     return templates.TemplateResponse("index.html", {"request": request})
 
 @app.get("/health")
-async def health_check():
-    """헬스 체크 엔드포인트"""
-    return {
-        "status": "healthy",
-        "gemini": "available" if model else "unavailable",
-        "serper": "available" if SERPER_API_KEY else "unavailable",
-        "cache_size": len(_cache)
-    }
-
-# ============ 종료 시 정리 ============
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """서버 종료 시 리소스 정리"""
-    await http_client.aclose()
-    print("✅ HTTP 클라이언트 종료")
+async def health():
+    return {"status": "ok", "cache": len(state.cache)}
