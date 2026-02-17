@@ -202,6 +202,136 @@ const html=marked.parse(md);
 document.getElementById("result").innerHTML=html;
 }
 </script>
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI 제품 분석기</title>
+    
+    <link href="https://fonts.googleapis.com/css2?family=Pretendard:wght@400;600;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    
+    <style>
+        :root {
+            --primary: #1a73e8;
+            --bg: #f8f9fa;
+            --border: #e0e0e0;
+            --text: #202124;
+            --radius: 12px;
+        }
+        body { font-family: 'Pretendard', sans-serif; background: var(--bg); color: var(--text); padding: 20px; }
+        .container { max-width: 800px; margin: 40px auto; background: white; padding: 30px; border-radius: 20px; box-shadow: 0 4px 20px rgba(0,0,0,0.08); }
+        .header { text-align: center; margin-bottom: 30px; }
+        .input-group { display: flex; gap: 10px; margin-bottom: 20px; }
+        input { flex: 1; padding: 15px; border: 2px solid var(--border); border-radius: var(--radius); font-size: 16px; }
+        button { padding: 0 25px; background: var(--primary); color: white; border: none; border-radius: var(--radius); font-weight: 600; cursor: pointer; }
+        button:disabled { background: #ccc; }
 
+        /* 진행바 */
+        .progress-wrapper { display: none; margin: 20px 0; padding: 20px; background: #f1f3f4; border-radius: var(--radius); }
+        .progress-container { width: 100%; height: 8px; background: #ddd; border-radius: 4px; overflow: hidden; margin: 10px 0; }
+        .progress-fill { width: 0%; height: 100%; background: var(--primary); transition: width 0.3s ease; }
+        
+        /* 결과창 */
+        .result-container { margin-top: 20px; padding: 25px; border-radius: var(--radius); border: 1px solid var(--border); min-height: 100px; line-height: 1.8; }
+        #result h1, #result h2 { color: var(--primary); margin-top: 20px; }
+        #result ul { padding-left: 20px; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <div class="header">
+        <h1>AI 제품 분석 리포트</h1>
+        <p>실제 사용자 데이터를 분석하여 리포트를 생성합니다.</p>
+    </div>
+
+    <div class="input-group">
+        <input type="text" id="pName" placeholder="제품명을 입력하세요 (예: 갤럭시 S24)">
+        <button id="analyzeBtn" onclick="run()">리포트 생성</button>
+    </div>
+
+    <div id="progressWrapper" class="progress-wrapper">
+        <div style="display:flex; justify-content:space-between; font-size:14px;">
+            <span id="stepMsg">준비 중...</span>
+            <span id="percentText">0%</span>
+        </div>
+        <div class="progress-container">
+            <div id="progressFill" class="progress-fill"></div>
+        </div>
+    </div>
+
+    <div class="result-container">
+        <div id="result">제품명을 입력하고 버튼을 눌러주세요.</div>
+    </div>
+</div>
+
+<script>
+    let isAnalyzing = false;
+
+    async function run() {
+        const pName = document.getElementById('pName').value.trim();
+        if (!pName || isAnalyzing) return;
+
+        // UI 요소
+        const btn = document.getElementById('analyzeBtn');
+        const wrapper = document.getElementById('progressWrapper');
+        const fill = document.getElementById('progressFill');
+        const percent = document.getElementById('percentText');
+        const msg = document.getElementById('stepMsg');
+        const resultDiv = document.getElementById('result');
+
+        isAnalyzing = true;
+        btn.disabled = true;
+        wrapper.style.display = 'block';
+        resultDiv.style.opacity = '0.5';
+        resultDiv.innerHTML = "데이터 수집 및 리포트 생성 중...";
+
+        // SSE 연결 (백엔드 /analyze 호출)
+        // ⚠️ Render 배포 시 실제 URL을 넣거나 상대 경로를 사용하세요.
+        const eventSource = new EventSource(`/analyze?product=${encodeURIComponent(pName)}`);
+
+        eventSource.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+
+            // 실시간 진행바 업데이트
+            fill.style.width = data.p + '%';
+            percent.innerText = data.p + '%';
+            msg.innerText = data.m;
+
+            // 완료 시 결과 출력
+            if (data.p === 100 && data.answer) {
+                eventSource.close();
+                setTimeout(() => {
+                    wrapper.style.display = 'none';
+                    // 마크다운 변환 후 'result' ID 영역에 출력
+                    resultDiv.innerHTML = marked.parse(data.answer);
+                    resultDiv.style.opacity = '1';
+                    isAnalyzing = false;
+                    btn.disabled = false;
+                }, 500);
+            }
+
+            if (data.error) {
+                eventSource.close();
+                alert("오류: " + data.m);
+                isAnalyzing = false;
+                btn.disabled = false;
+                resultDiv.innerHTML = "오류가 발생했습니다.";
+            }
+        };
+
+        eventSource.onerror = () => {
+            eventSource.close();
+            console.error("SSE Connection Failed");
+            isAnalyzing = false;
+            btn.disabled = false;
+        };
+    }
+</script>
+
+</body>
+</html>
 </body>
 </html>
