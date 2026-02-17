@@ -1,141 +1,124 @@
 import os
-import asyncio
 import json
+import asyncio
 import logging
 import re
-import time
-from typing import AsyncGenerator, List, Dict
-from fastapi import FastAPI, Request
+from typing import AsyncGenerator
+
+import httpx
+from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
-from contextlib import asynccontextmanager
-import httpx
+from bs4 import BeautifulSoup
 from duckduckgo_search import DDGS
+from contextlib import asynccontextmanager
 
-# --- 로깅 및 설정 ---
+# --- 로깅 설정 ---
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("UltimateAnalyzer")
+logger = logging.getLogger("analyzer")
 
-# API 키 설정 (환경 변수에서 로드)
-GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "")
-GROQ_KEY = os.environ.get("GROQ_API_KEY", "")
-OPENROUTER_KEY = os.environ.get("OPENROUTER_KEY", "")
-SERPER_KEY = os.environ.get("SERPER_API_KEY", "") # Serper.dev API
+# API 키 설정
+GEMINI_KEY = os.getenv("GEMINI_API_KEY")
+GROQ_KEY = os.getenv("GROQ_API_KEY")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 전역 HTTP 클라이언트 설정 (타임아웃 및 연결 제한 최적화)
-    limits = httpx.Limits(max_keepalive_connections=10, max_connections=20)
-    app.state.client = httpx.AsyncClient(timeout=30.0, limits=limits, follow_redirects=True)
+    # 안정성을 위해 브라우저 헤더 설정 (차단 방지)
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+    app.state.client = httpx.AsyncClient(
+        timeout=httpx.Timeout(20.0, read=50.0), 
+        headers=headers, 
+        follow_redirects=True,
+        limits=httpx.Limits(max_keepalive_connections=5, max_connections=10)
+    )
     yield
     await app.state.client.aclose()
 
 app = FastAPI(lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-# --- 데이터 정제 및 유틸리티 ---
-def clean_html(raw_html: str) -> str:
-    """HTML 태그 제거 및 핵심 텍스트 추출 (v5.3 기준)"""
-    if not raw_html: return ""
-    clean = re.sub(r'<(script|style|header|footer|nav|form|iframe|noscript).*?>.*?</\1>', '', raw_html, flags=re.DOTALL)
-    clean = re.sub(r'<[^>]+>', ' ', clean)
-    return " ".join(clean.split())[:12000]
+# --- 웹 수집 로직 (안정성 강화) ---
+async def fetch_page(client: httpx.AsyncClient, url: str) -> str:
+    try:
+        r = await client.get(url)
+        if r.status_code != 200: return ""
+        soup = BeautifulSoup(r.text, "html.parser")
+        for s in soup(['script', 'style', 'header', 'footer', 'nav', 'form', 'aside']): s.decompose()
+        return soup.get_text(" ", strip=True)
+    except: return ""
 
-# --- 다중 검색 엔진 엔진 (Serper, DDG, Reddit) ---
-async def fetch_search_results(client: httpx.AsyncClient, query: str):
+async def collect_reviews(product_name: str, client: httpx.AsyncClient) -> str:
     urls = []
-    
-    # 1. Serper (Google Search) - 가장 정확함
-    if SERPER_KEY:
+    try:
+        with DDGS() as ddgs:
+            # 비동기 병목 방지를 위해 스레드 활용
+            results = await asyncio.to_thread(lambda: list(ddgs.text(f"{product_name} 실사용 후기 단점", max_results=6)))
+            urls = [r.get("href") for r in results if r and r.get("href")]
+    except Exception as e:
+        logger.error(f"Search error: {e}")
+
+    if not urls: return ""
+    tasks = [fetch_page(client, u) for u in urls]
+    pages = await asyncio.gather(*tasks, return_exceptions=True)
+    valid_pages = [p for p in pages if isinstance(p, str) and p]
+    return "\n\n".join(valid_pages)[:10000]
+
+# --- 프롬프트 빌더 (기존 고급 버전 유지) ---
+def build_prompt(product_name: str, context: str) -> str:
+    return f"""
+# 역할
+너는 데이터 기반 전문 제품 분석 리서처다. 오직 제공된 리뷰 데이터만 기반으로 분석한다.
+# 🔴 절대 규칙
+- "{product_name}" 이 제품만 분석하라. (Pro, Max, 이전 세대 언급 금지)
+- 데이터에 없는 정보 생성 금지. 불확실하면 "확인되지 않음" 표기.
+# 📊 분석 목표
+1.핵심 요약 2.주요 특징 3.장점 상세 4.단점 상세 5.감정 분석 6.점수 평가(성능,디자인,내구성,편의성,가성비) 7.전체 평균 8.추천/비추천 대상 9.종합 결론
+# 데이터
+{context}
+"""
+
+
+async def call_ai_logic(client: httpx.AsyncClient, prompt: str):
+    # 1. Gemini 우선 시도
+    if GEMINI_KEY:
         try:
-            resp = await client.post("https://google.serper.dev/search", 
-                headers={"X-API-KEY": SERPER_KEY, "Content-Type": "application/json"},
-                json={"q": query, "num": 5})
-            if resp.status_code == 200:
-                urls.extend([r['link'] for r in resp.json().get('organic', [])])
-        except Exception as e: logger.error(f"Serper Error: {e}")
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}"
+            r = await client.post(url, json={"contents":[{"parts":[{"text":prompt}]}]}, timeout=50)
+            if r.status_code == 200:
+                return r.json()['candidates'][0]['content']['parts'][0]['text'], "Gemini"
+        except: pass
 
-    # 2. DuckDuckGo - 무료 및 익명성
-    try:
-        with DDGS() as ddgs:
-            ddg_results = await asyncio.to_thread(lambda: list(ddgs.text(query, max_results=5)))
-            urls.extend([r['href'] for r in ddg_results if 'href' in r])
-    except Exception as e: logger.error(f"DDG Error: {e}")
+    # 2. Groq 폴백
+    if GROQ_KEY:
+        try:
+            r = await client.post("https://api.groq.com/openai/v1/chat/completions",
+                headers={"Authorization": f"Bearer {GROQ_KEY}"},
+                json={"model": "llama3-70b-8192", "messages": [{"role": "user", "content": prompt}]})
+            if r.status_code == 200:
+                return r.json()['choices'][0]['message']['content'], "Groq"
+        except: pass
+    raise Exception("AI 응답을 가져올 수 없습니다.")
 
-    # 3. Reddit 전용 검색 (커뮤니티 여론 수집)
-    try:
-        reddit_query = f"{query} site:reddit.com"
-        with DDGS() as ddgs:
-            reddit_results = await asyncio.to_thread(lambda: list(ddgs.text(reddit_query, max_results=3)))
-            urls.extend([r['href'] for r in reddit_results if 'href' in r])
-    except Exception as e: logger.error(f"Reddit Search Error: {e}")
-
-    return list(set(urls)) # 중복 제거
-
-# --- 실시간 분석 엔진 (Streaming) ---
+# --- 스트리밍 엔드포인트 ---
 async def final_analysis_stream(product_name: str) -> AsyncGenerator[str, None]:
     client = app.state.client
-    
     try:
-        # [단계 1] 검색 가동 (20%)
-        yield f"data: {json.dumps({'p': 20, 'm': '🌐 Google, Reddit, DDG에서 실사용 리뷰를 탐색 중입니다...'})}\n\n"
-        search_query = f"{product_name} 실사용 단점 장점 후기"
-        target_urls = await fetch_search_results(client, search_query)
+        yield f"data: {json.dumps({'p':20, 'm':'🔍 리뷰 데이터를 수집하고 있습니다...'})}\n\n"
+        context = await collect_reviews(product_name, client)
         
-        if not target_urls:
-            raise Exception("검색 결과를 찾을 수 없습니다.")
+        if not context:
+            raise Exception("데이터 수집 실패")
 
-        # [단계 2] 웹 수집 및 정제 (50%)
-        yield f"data: {json.dumps({'p': 50, 'm': f'📦 {len(target_urls)}개의 소스에서 데이터를 수집하고 정제 중...'})}\n\n"
-        fetch_tasks = [client.get(url, timeout=15.0) for url in target_urls]
-        responses = await asyncio.gather(*fetch_tasks, return_exceptions=True)
-        
-        contexts = []
-        for i, resp in enumerate(responses):
-            if isinstance(resp, httpx.Response) and resp.status_code == 200:
-                contexts.append(f"[Source {i}]: {clean_html(resp.text)}")
-        
-        full_context = "\n\n".join(contexts)
+        yield f"data: {json.dumps({'p':60, 'm':'🧠 AI가 심층 분석 리포트를 작성 중입니다...'})}\n\n"
+        prompt = build_prompt(product_name, context)
+        final_answer, model_name = await call_ai_logic(client, prompt)
 
-        # [단계 3] AI 로테이션 분석 (80%)
-        yield f"data: {json.dumps({'p': 80, 'm': '🧠 AI 모델 로테이션(Gemini/Groq/OpenRouter) 가동 중...'})}\n\n"
-        
-        final_answer = None
-        model_used = ""
-        prompt = f"제품 '{product_name}'에 대해 수집된 다음 리뷰 데이터를 분석해라. 광고는 제외하고 실제 사용자의 비판과 칭찬을 구분하여 리포트를 작성해라.\n\n데이터:\n{full_context}"
-
-        # AI 로테이션 시도
-        # 1. Gemini
-        if not final_answer and GEMINI_KEY:
-            try:
-                url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}"
-                r = await client.post(url, json={"contents": [{"parts": [{"text": prompt}]}]})
-                if r.status_code == 200:
-                    final_answer = r.json()['candidates'][0]['content']['parts'][0]['text']
-                    model_used = "Gemini 1.5 Flash"
-            except: pass
-
-        # 2. Groq
-        if not final_answer and GROQ_KEY:
-            try:
-                r = await client.post("https://api.groq.com/openai/v1/chat/completions", 
-                    headers={"Authorization": f"Bearer {GROQ_KEY}"},
-                    json={"model": "llama3-70b-8192", "messages": [{"role": "user", "content": prompt}]})
-                if r.status_code == 200:
-                    final_answer = r.json()['choices'][0]['message']['content']
-                    model_used = "Groq (Llama 3)"
-            except: pass
-
-        if not final_answer:
-            raise Exception("모든 AI 모델이 응답하지 않습니다. API 키 설정을 확인하세요.")
-
-        # [단계 4] 최종 완료 (100%)
-        yield f"data: {json.dumps({'p': 100, 'm': f'✅ {model_used} 분석 완료!', 'answer': final_answer})}\n\n"
-
+        yield f"data: {json.dumps({'p':100, 'm':f'✅ {model_name} 분석 완료', 'answer': final_answer})}\n\n"
     except Exception as e:
-        logger.error(f"Fatal Error: {str(e)}")
-        yield f"data: {json.dumps({'p': 0, 'm': f'❌ 오류 발생: {str(e)}', 'error': True})}\n\n"
+        yield f"data: {json.dumps({'p':0, 'm':f'오류: {str(e)}', 'error': True})}\n\n"
 
 @app.get("/analyze")
-async def analyze_endpoint(product: str):
+async def analyze(product: str):
     return StreamingResponse(final_analysis_stream(product), media_type="text/event-stream")
