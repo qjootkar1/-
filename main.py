@@ -5,12 +5,12 @@ import logging
 import re
 from typing import AsyncGenerator, List
 from fastapi import FastAPI
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import httpx
 from duckduckgo_search import DDGS
-from bs4 import BeautifulSoup  # HTML 파싱 안정화
+from bs4 import BeautifulSoup
 
 # --- 로깅 및 설정 ---
 logging.basicConfig(level=logging.INFO)
@@ -34,7 +34,6 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 
 # --- 데이터 정제 ---
 def clean_html(raw_html: str) -> str:
-    """HTML 태그 제거 및 핵심 텍스트 추출"""
     if not raw_html:
         return ""
     try:
@@ -47,10 +46,9 @@ def clean_html(raw_html: str) -> str:
         logger.error(f"HTML 정제 오류: {e}")
         return raw_html[:2000]
 
-# --- 다중 검색 엔진 ---
+# --- 검색 ---
 async def fetch_search_results(client: httpx.AsyncClient, query: str) -> List[str]:
     urls = []
-    # 1. Serper
     if SERPER_KEY:
         try:
             resp = await client.post(
@@ -63,7 +61,6 @@ async def fetch_search_results(client: httpx.AsyncClient, query: str) -> List[st
         except Exception as e:
             logger.error(f"Serper Error: {e}")
 
-    # 2. DuckDuckGo
     try:
         with DDGS() as ddgs:
             ddg_results = await asyncio.to_thread(lambda: list(ddgs.text(query, max_results=5)))
@@ -71,7 +68,6 @@ async def fetch_search_results(client: httpx.AsyncClient, query: str) -> List[st
     except Exception as e:
         logger.error(f"DDG Error: {e}")
 
-    # 3. Reddit
     try:
         reddit_query = f"{query} site:reddit.com"
         with DDGS() as ddgs:
@@ -82,20 +78,18 @@ async def fetch_search_results(client: httpx.AsyncClient, query: str) -> List[st
 
     return list(set(urls))
 
-# --- 실시간 분석 엔진 ---
+# --- 분석 스트리밍 ---
 async def final_analysis_stream(product_name: str) -> AsyncGenerator[str, None]:
     client = app.state.client
     try:
-        # 단계 1
         yield f"data: {json.dumps({'p': 20, 'm': '🌐 검색 중...'})}\n\n"
         search_query = f"{product_name} 실사용 단점 장점 후기"
         target_urls = await fetch_search_results(client, search_query)
         if not target_urls:
             raise Exception("검색 결과 없음")
 
-        # 단계 2
         yield f"data: {json.dumps({'p': 50, 'm': f'📦 {len(target_urls)}개 소스 수집 중...'})}\n\n"
-        semaphore = asyncio.Semaphore(5)  # 동시 요청 제한
+        semaphore = asyncio.Semaphore(5)
 
         async def safe_fetch(url):
             async with semaphore:
@@ -110,12 +104,10 @@ async def final_analysis_stream(product_name: str) -> AsyncGenerator[str, None]:
         contexts = await asyncio.gather(*[safe_fetch(url) for url in target_urls])
         full_context = "\n\n".join([c for c in contexts if c])
 
-        # 단계 3
         yield f"data: {json.dumps({'p': 80, 'm': '🧠 AI 분석 중...'})}\n\n"
         final_answer, model_used = None, ""
         prompt = f"제품 '{product_name}' 리뷰 데이터를 분석해라. 광고 제외, 장점/단점 구분.\n\n데이터:\n{full_context}"
 
-        # Gemini
         if not final_answer and GEMINI_KEY:
             try:
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}"
@@ -132,7 +124,6 @@ async def final_analysis_stream(product_name: str) -> AsyncGenerator[str, None]:
             except Exception as e:
                 logger.error(f"Gemini Error: {e}")
 
-        # Groq
         if not final_answer and GROQ_KEY:
             try:
                 r = await client.post(
@@ -154,12 +145,27 @@ async def final_analysis_stream(product_name: str) -> AsyncGenerator[str, None]:
         if not final_answer:
             raise Exception("AI 모델 응답 없음")
 
-        # 단계 4
         yield f"data: {json.dumps({'p': 100, 'm': f'✅ {model_used} 분석 완료!', 'answer': final_answer})}\n\n"
 
     except Exception as e:
         logger.error(f"Fatal Error: {str(e)}")
         yield f"data: {json.dumps({'p': 0, 'm': f'❌ 오류 발생: {str(e)}', 'error': True})}\n\n"
+
+# --- 엔드포인트 ---
+@app.get("/", response_class=HTMLResponse)
+async def root():
+    return """
+    <html>
+      <head><title>Shopping Guard</title></head>
+      <body>
+        <h2>제품명 입력</h2>
+        <form action="/analyze" method="get">
+          <input type="text" name="product" placeholder="제품명을 입력하세요">
+          <button type="submit">분석하기</button>
+        </form>
+      </body>
+    </html>
+    """
 
 @app.get("/analyze")
 async def analyze_endpoint(product: str):
