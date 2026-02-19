@@ -336,7 +336,7 @@ async def call_ai(client: httpx.AsyncClient, prompt: str) -> Tuple[str, str]:
 
     raise RuntimeError("AI 호출 실패")
 
-# ── SSE 스트리밍 (무한 재연결 방지 버전) ─────────────────────────────
+# ── SSE 스트리밍 (무한 재연결 완전 방지) ─────────────────────────────
 async def analysis_stream(product: str) -> AsyncGenerator[str, None]:
     def emit(p: int, msg: str, **extra):
         return f"data: {json.dumps({'p': p, 'm': msg, **extra}, ensure_ascii=False)}\n\n"
@@ -351,18 +351,20 @@ async def analysis_stream(product: str) -> AsyncGenerator[str, None]:
             return
 
         # 연결 유지용 heartbeat
-        yield emit(5, "연결 확인 중...")
-        await asyncio.sleep(0.3)
-        yield emit(8, "리뷰 검색 준비...")
-        await asyncio.sleep(0.3)
+        for i in range(3):
+            yield emit(8, "연결 유지 중...")
+            await asyncio.sleep(1.2)
+
         yield emit(10, "리뷰 수집 중...")
 
         context, stats = await collect_review_data(product, client)
 
-        yield emit(48, f"수집 완료 → {stats['raw_urls']}개 URL → {stats['fetched_pages']}개 페이지")
-        await asyncio.sleep(0.4)
+        yield emit(50, f"수집 완료 → {stats['raw_urls']}개 URL → {stats['fetched_pages']}개 페이지")
+        await asyncio.sleep(0.5)
 
-        yield emit(60, "AI 분석 시작...")
+        yield emit(65, "AI 분석 시작...")
+        await asyncio.sleep(0.6)   # heartbeat
+
         prompt = build_prompt(product, context)
         answer, model = await call_ai(client, prompt)
 
