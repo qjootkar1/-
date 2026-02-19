@@ -36,21 +36,11 @@ MAX_CONCURRENT_FETCH  = 5
 RATE_LIMIT_PER_MINUTE = 10
 CACHE_TTL_SECONDS     = 3600
 
-REQUEST_TIMEOUT = httpx.Timeout(10.0, read=25.0, connect=8.0, pool=8.0)
+REQUEST_TIMEOUT = httpx.Timeout(12.0, read=30.0, connect=10.0, pool=10.0)
 
 # 공개 메타서치 인스턴스
-SEARXNG_INSTANCES = [
-    "https://searx.tiekoetter.net",
-    "https://searx.be",
-    "https://priv.au",
-    "https://search.sapti.me",
-]
-
-WHOOGLE_INSTANCES = [
-    "https://whoogle.sdf.org",
-    "https://whoogle.privacydev.net",
-]
-
+SEARXNG_INSTANCES = ["https://searx.tiekoetter.net", "https://searx.be", "https://priv.au", "https://search.sapti.me"]
+WHOOGLE_INSTANCES = ["https://whoogle.sdf.org", "https://whoogle.privacydev.net"]
 METAGER_ENDPOINT = "https://metager.org/meta/meta.ger3"
 
 # ── 전역 상태 ──────────────────────────────────────────────────────
@@ -62,7 +52,7 @@ _result_cache: Dict[str, Tuple[float, str]] = {}
 async def lifespan(app: FastAPI):
     client = httpx.AsyncClient(
         timeout=REQUEST_TIMEOUT,
-        limits=httpx.Limits(max_connections=20, max_keepalive_connections=8),
+        limits=httpx.Limits(max_connections=25, max_keepalive_connections=10),
         headers={"User-Agent": "Mozilla/5.0 (compatible; ProductAnalyzer/1.0)"},
         follow_redirects=True,
     )
@@ -73,7 +63,6 @@ async def lifespan(app: FastAPI):
     logger.info("HTTP 클라이언트 종료")
 
 app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
-
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["GET"], allow_headers=["*"])
 
 # ── Rate Limit ─────────────────────────────────────────────────────
@@ -121,10 +110,10 @@ def set_cache(name: str, value: str):
         del _result_cache[oldest]
     _result_cache[key] = (time.time(), value)
 
-# ── 페이지 텍스트 추출 ─────────────────────────────────────────────
+# ── 페이지 추출 ────────────────────────────────────────────────────
 async def fetch_page_text(client: httpx.AsyncClient, url: str) -> str:
     try:
-        r = await client.get(url, timeout=20)
+        r = await client.get(url, timeout=22)
         if r.status_code != 200:
             return ""
         soup = BeautifulSoup(r.text, "lxml")
@@ -135,7 +124,7 @@ async def fetch_page_text(client: httpx.AsyncClient, url: str) -> str:
     except Exception:
         return ""
 
-# ── 검색 엔진 (Whoogle 개선됨) ─────────────────────────────────────
+# ── 검색 엔진 ──────────────────────────────────────────────────────
 async def search_serper(query: str, client: httpx.AsyncClient) -> List[str]:
     if not SERPER_KEY:
         return []
@@ -176,7 +165,7 @@ async def _search_searxng(q: str, want: int, c: httpx.AsyncClient, bases: List[s
     random.shuffle(bases)
     for base in bases:
         try:
-            r = await c.get(f"{base}/search", params={"q": q, "format": "json"}, timeout=9)
+            r = await c.get(f"{base}/search", params={"q": q, "format": "json"}, timeout=10)
             if r.status_code == 200:
                 data = r.json()
                 return [r["url"] for r in data.get("results", []) if r.get("url", "").startswith("http")][:want]
@@ -188,15 +177,11 @@ async def _search_whoogle(q: str, want: int, c: httpx.AsyncClient, bases: List[s
     random.shuffle(bases)
     for base in bases:
         try:
-            r = await c.get(f"{base}/search", params={"q": q}, timeout=10)
-            if r.status_code != 200:
-                continue
+            r = await c.get(f"{base}/search", params={"q": q}, timeout=12)
+            if r.status_code != 200: continue
             soup = BeautifulSoup(r.text, "html.parser")
             links = []
-            for item in soup.select(".result, .result-item, div.result"):
-                a = item.find("a", href=True)
-                if not a:
-                    continue
+            for a in soup.select("a[href]"):
                 href = a["href"]
                 if href.startswith(("http://", "https://")):
                     links.append(href)
@@ -205,16 +190,9 @@ async def _search_whoogle(q: str, want: int, c: httpx.AsyncClient, bases: List[s
                     real = parse_qs(parsed.query).get("url", [None])[0]
                     if real and real.startswith(("http://", "https://")):
                         links.append(real)
-            unique = []
-            seen = set()
-            for link in links:
-                if link not in seen:
-                    seen.add(link)
-                    unique.append(link)
-                if len(unique) >= want:
-                    break
+            unique = list(dict.fromkeys(links))[:want]
             if unique:
-                return unique[:want]
+                return unique
         except Exception:
             pass
     return []
@@ -229,7 +207,7 @@ async def _search_metager(q: str, want: int, c: httpx.AsyncClient, bases: List[s
         pass
     return []
 
-# ── 리뷰 수집 (한국 커뮤니티 타겟팅) ───────────────────────────────
+# ── 리뷰 수집 ──────────────────────────────────────────────────────
 async def collect_review_data(product: str, client: httpx.AsyncClient) -> Tuple[str, Dict]:
     community = "site:fmkorea.com OR site:clien.net OR site:dcinside.com OR site:ppomppu.co.kr OR site:ruliweb.com OR site:dogdrip.net"
     q_kr = f'"{product}" (후기 OR 장단점 OR 리뷰 OR 사용기 OR 실사용 OR 불만 OR 추천) {community}'
@@ -243,7 +221,7 @@ async def collect_review_data(product: str, client: httpx.AsyncClient) -> Tuple[
         free_urls = list(set(free_urls + free_en))
 
     all_urls = list(set(serper_urls + free_urls))
-    logger.info(f"후보 URL: {len(all_urls)}개 (Serper:{len(serper_urls)}, 무료:{len(free_urls)})")
+    logger.info(f"후보 URL: {len(all_urls)}개")
 
     if not all_urls:
         return "", {"raw": 0, "fetched": 0, "used": 0, "chars": 0}
@@ -280,23 +258,19 @@ async def collect_review_data(product: str, client: httpx.AsyncClient) -> Tuple[
 
     return context, stats
 
-# ── 최적화된 프롬프트 ───────────────────────────────────────────────
+# ── 프롬프트 ──────────────────────────────────────────────────────
 def build_prompt(product_name: str, context: str) -> str:
     p = f'"{product_name}"'
     if context.strip():
-        data_section = f"""[엄격 규칙 - 위반 시 분석 무효]
+        data_section = f"""[엄격 규칙]
 1. {p} 문자열이 정확히 등장한 문장만 사용
-2. 다른 모델·세대·유사 이름 절대 포함 금지
-3. 제품명 없거나 모호 → 전부 무시
-4. 근거 없는 내용 → "데이터 부족" 처리
-
-원문:
-{context}"""
+2. 다른 모델·세대 절대 포함 금지
+3. 근거 없는 내용은 "데이터 부족" 처리
+원문: {context}"""
     else:
         data_section = f"실시간 데이터 없음. 모든 항목에 [AI 추정] 필수. {p} 외 정보 금지."
 
-    return f"""당신은 매우 엄격한 제품 분석 전문가입니다.
-분석 대상은 오직 {p} 하나뿐입니다.
+    return f"""당신은 매우 엄격한 제품 분석 전문가입니다. 분석 대상은 오직 {p} 하나뿐입니다.
 
 출력 (마크다운)
 
@@ -306,22 +280,21 @@ def build_prompt(product_name: str, context: str) -> str:
 ## 4. 단점 (근거 필수)
 ## 5. 사용자 반응
 ## 6. 점수
-| 항목   | 점수 | 근거           |
-|--------|------|----------------|
-| 성능   |      |                |
-| 디자인 |      |                |
-| 내구성 |      |                |
-| 편의성 |      |                |
-| 가성비 |      |                |
-| 종합   |      |                |
+| 항목   | 점수 | 근거 |
+|--------|------|------|
+| 성능   |      |      |
+| 디자인 |      |      |
+| 내구성 |      |      |
+| 편의성 |      |      |
+| 가성비 |      |      |
+| 종합   |      |      |
 ## 7. 추천/비추천
 ## 8. 결론
 
 ---
-데이터 및 규칙
 {data_section}
 
-최종 지시: {p} 외 모든 데이터 무시. 규칙 위반 금지."""
+최종 지시: {p} 외 모든 데이터 무시."""
 
 # ── AI 호출 ───────────────────────────────────────────────────────
 async def call_ai(client: httpx.AsyncClient, prompt: str) -> Tuple[str, str]:
@@ -331,7 +304,7 @@ async def call_ai(client: httpx.AsyncClient, prompt: str) -> Tuple[str, str]:
                 f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}",
                 json={"contents": [{"parts": [{"text": prompt}]}],
                       "generationConfig": {"temperature": 0.35, "maxOutputTokens": 4096}},
-                timeout=60
+                timeout=65
             )
             r.raise_for_status()
             text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
@@ -353,7 +326,7 @@ async def call_ai(client: httpx.AsyncClient, prompt: str) -> Tuple[str, str]:
                     "temperature": 0.35,
                     "max_tokens": 3800
                 },
-                timeout=70
+                timeout=75
             )
             r.raise_for_status()
             text = r.json()["choices"][0]["message"]["content"]
@@ -361,7 +334,7 @@ async def call_ai(client: httpx.AsyncClient, prompt: str) -> Tuple[str, str]:
         except Exception as e:
             logger.error(f"Groq 실패: {e}")
 
-    raise RuntimeError("AI 모델 모두 호출 실패")
+    raise RuntimeError("AI 호출 실패")
 
 # ── SSE 스트리밍 ───────────────────────────────────────────────────
 async def analysis_stream(product: str) -> AsyncGenerator[str, None]:
@@ -377,12 +350,14 @@ async def analysis_stream(product: str) -> AsyncGenerator[str, None]:
             yield emit(100, "분석 완료", answer=cached)
             return
 
+        yield emit(5, "리뷰 검색 시작...")
         yield emit(10, "리뷰 수집 중...")
 
         context, stats = await collect_review_data(product, client)
 
-        yield emit(50, f"수집: {stats['raw_urls']}개 URL → {stats['fetched_pages']}개 페이지 → {stats['context_chars']:,}자")
+        yield emit(50, f"수집 완료 → {stats['raw_urls']}개 URL → {stats['fetched_pages']}개 페이지")
 
+        yield emit(60, "AI 분석 시작...")
         prompt = build_prompt(product, context)
         answer, model = await call_ai(client, prompt)
 
@@ -390,19 +365,18 @@ async def analysis_stream(product: str) -> AsyncGenerator[str, None]:
             set_cache(product, answer)
 
         source = "리뷰 기반" if context else "AI 추정"
-        yield emit(100, f"{model} 완료 [{source}]", answer=answer)
+        yield emit(100, f"{model} 분석 완료 [{source}]", answer=answer)
 
     except Exception as e:
-        logger.exception("분석 중 오류")
-        yield emit(-1, "서버 오류 발생", error=True)
+        logger.exception("분석 스트림 오류")
+        yield emit(-1, "분석 중 오류가 발생했습니다. 다시 시도해 주세요.", error=True)
 
-# ── 라우트 (templates 폴더 안 index.html 읽기) ─────────────────────
+# ── 라우트 ─────────────────────────────────────────────────────────
 @app.get("/", response_class=HTMLResponse)
 async def root():
     try:
         with open("templates/index.html", "r", encoding="utf-8") as f:
-            html_content = f.read()
-        return HTMLResponse(content=html_content)
+            return HTMLResponse(content=f.read())
     except FileNotFoundError:
         logger.error("templates/index.html 파일을 찾을 수 없습니다.")
         return HTMLResponse(content="<h1>templates/index.html 파일이 없습니다.</h1>", status_code=500)
@@ -413,10 +387,7 @@ async def analyze(product: str = ""):
     return StreamingResponse(
         analysis_stream(clean),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        }
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
     )
 
 @app.get("/health")
@@ -425,6 +396,5 @@ async def health():
         "status": "ok",
         "gemini": bool(GEMINI_KEY),
         "groq": bool(GROQ_KEY),
-        "serper": bool(SERPER_KEY),
-        "cache_entries": len(_result_cache)
+        "serper": bool(SERPER_KEY)
     }
