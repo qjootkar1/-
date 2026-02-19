@@ -135,7 +135,7 @@ async def fetch_page_text(client: httpx.AsyncClient, url: str) -> str:
     except Exception:
         return ""
 
-# ── 검색 엔진 ──────────────────────────────────────────────────────
+# ── 검색 엔진 (Whoogle 개선됨) ─────────────────────────────────────
 async def search_serper(query: str, client: httpx.AsyncClient) -> List[str]:
     if not SERPER_KEY:
         return []
@@ -396,16 +396,16 @@ async def analysis_stream(product: str) -> AsyncGenerator[str, None]:
         logger.exception("분석 중 오류")
         yield emit(-1, "서버 오류 발생", error=True)
 
-# ── 라우트 ─────────────────────────────────────────────────────────
+# ── 라우트 (templates 폴더 안 index.html 읽기) ─────────────────────
 @app.get("/", response_class=HTMLResponse)
 async def root():
     try:
-        with open("index.html", "r", encoding="utf-8") as f:
+        with open("templates/index.html", "r", encoding="utf-8") as f:
             html_content = f.read()
         return HTMLResponse(content=html_content)
     except FileNotFoundError:
-        logger.error("index.html 파일을 찾을 수 없습니다.")
-        return HTMLResponse(content="<h1>index.html 파일이 없습니다.</h1>", status_code=500)
+        logger.error("templates/index.html 파일을 찾을 수 없습니다.")
+        return HTMLResponse(content="<h1>templates/index.html 파일이 없습니다.</h1>", status_code=500)
 
 @app.get("/analyze")
 async def analyze(product: str = ""):
