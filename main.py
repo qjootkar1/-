@@ -487,18 +487,89 @@ async def fetch_page(client: httpx.AsyncClient, url: str) -> str:
         return ""
 
 
-async def collect_reviews(product_name: str, client: httpx.AsyncClient) -> str:
-    urls = []
+async def search_ddgs(query: str) -> list[str]:
+    """DDGS로 검색 — 여러 방법 순차 시도"""
+    # 방법 1: 기본 text 검색
     try:
         with DDGS() as ddgs:
             results = await asyncio.to_thread(
-                list, ddgs.text(f"{product_name} 실사용 후기 단점", max_results=6)
+                list, ddgs.text(query, max_results=6)
             )
             urls = [r.get("href") for r in results if r and r.get("href")]
+            if urls:
+                logger.info(f"DDGS text OK: {len(urls)} urls")
+                return urls
     except Exception as e:
-        logger.error(f"Search error: {e}")
+        logger.warning(f"DDGS text failed: {e}")
 
+    # 방법 2: backend="lite" 시도
+    try:
+        with DDGS() as ddgs:
+            results = await asyncio.to_thread(
+                list, ddgs.text(query, max_results=6, backend="lite")
+            )
+            urls = [r.get("href") for r in results if r and r.get("href")]
+            if urls:
+                logger.info(f"DDGS lite OK: {len(urls)} urls")
+                return urls
+    except Exception as e:
+        logger.warning(f"DDGS lite failed: {e}")
+
+    # 방법 3: 다른 키워드로 재시도
+    try:
+        alt_query = query.replace("실사용 후기 단점", "review pros cons")
+        with DDGS() as ddgs:
+            results = await asyncio.to_thread(
+                list, ddgs.text(alt_query, max_results=6)
+            )
+            urls = [r.get("href") for r in results if r and r.get("href")]
+            if urls:
+                logger.info(f"DDGS alt OK: {len(urls)} urls")
+                return urls
+    except Exception as e:
+        logger.warning(f"DDGS alt failed: {e}")
+
+    return []
+
+
+async def search_google_scrape(query: str, client: httpx.AsyncClient) -> list[str]:
+    """Google 검색 결과 직접 스크래핑 (DDGS 실패 시 폴백)"""
+    try:
+        encoded = query.replace(" ", "+")
+        url = f"https://www.google.com/search?q={encoded}&num=8&hl=ko"
+        r = await client.get(url, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+            "Accept-Language": "ko-KR,ko;q=0.9"
+        })
+        soup = BeautifulSoup(r.text, "html.parser")
+        urls = []
+        for a in soup.select("a[href]"):
+            href = a.get("href", "")
+            if href.startswith("/url?q="):
+                actual = href.split("/url?q=")[1].split("&")[0]
+                if actual.startswith("http") and "google.com" not in actual:
+                    urls.append(actual)
+        logger.info(f"Google scrape OK: {len(urls)} urls")
+        return urls[:6]
+    except Exception as e:
+        logger.warning(f"Google scrape failed: {e}")
+        return []
+
+
+async def collect_reviews(product_name: str, client: httpx.AsyncClient) -> str:
+    query = f"{product_name} 실사용 후기 단점"
+
+    # 1. DDGS 시도
+    urls = await search_ddgs(query)
+
+    # 2. DDGS 실패 → Google 스크래핑 폴백
     if not urls:
+        logger.warning("DDGS 완전 실패 → Google 스크래핑 시도")
+        urls = await search_google_scrape(query, client)
+
+    # 3. 검색 자체가 완전 실패해도 빈 문자열 반환 (AI가 자체 지식으로 분석)
+    if not urls:
+        logger.warning("모든 검색 실패 — AI 자체 지식으로 분석 진행")
         return ""
 
     tasks = [fetch_page(client, u) for u in urls]
@@ -521,27 +592,39 @@ async def collect_reviews(product_name: str, client: httpx.AsyncClient) -> str:
 
 # --- 프롬프트 빌더 ---
 def build_prompt(product_name: str, context: str) -> str:
+    if context.strip():
+        data_section = f"아래는 실제 수집된 리뷰/후기 데이터입니다. 이를 최우선으로 활용하라.\n\n{context}"
+        rule = f'수집된 데이터를 기반으로 분석하되, 데이터에 없는 내용은 "확인되지 않음"으로 표기하라.'
+    else:
+        data_section = "⚠️ 실시간 리뷰 수집에 실패했습니다. AI의 사전 학습 지식을 바탕으로 분석하라. 이 경우 각 항목 앞에 '[AI 추정]' 태그를 붙여라."
+        rule = "학습 데이터 기반으로 최대한 정확하게 분석하되, 불확실한 내용에는 '[AI 추정]' 태그를 반드시 붙여라."
+
     return f"""
 # 역할
-너는 데이터 기반 전문 제품 분석 리서처다. 오직 제공된 리뷰 데이터만 기반으로 분석한다.
+너는 전문 제품 분석 리서처다. 한국어로 상세하고 구조적인 분석 리포트를 작성한다.
 
 # 🔴 절대 규칙
-- "{product_name}" 이 제품만 분석하라. (Pro, Max, 이전 세대 언급 금지)
-- 데이터에 없는 정보 생성 금지. 불확실하면 "확인되지 않음" 표기.
+- 분석 대상: "{product_name}" 만 분석하라. (다른 모델/세대 혼용 금지)
+- {rule}
 
-# 📊 분석 목표
-1. 핵심 요약
-2. 주요 특징
-3. 장점 상세
-4. 단점 상세
-5. 감정 분석
-6. 점수 평가 (성능 / 디자인 / 내구성 / 편의성 / 가성비)
-7. 전체 평균
-8. 추천 / 비추천 대상
-9. 종합 결론
+# 📊 분석 항목 (마크다운 형식으로 작성)
+## 1. 핵심 요약
+## 2. 주요 특징
+## 3. 장점 상세
+## 4. 단점 상세
+## 5. 사용자 감정 분석
+## 6. 점수 평가
+- 성능: X/10
+- 디자인: X/10
+- 내구성: X/10
+- 편의성: X/10
+- 가성비: X/10
+- **전체 평균: X/10**
+## 7. 추천 대상 / 비추천 대상
+## 8. 종합 결론
 
 # 데이터
-{context}
+{data_section}
 """
 
 
@@ -588,17 +671,20 @@ async def call_ai_logic(client: httpx.AsyncClient, prompt: str):
 async def final_analysis_stream(product_name: str) -> AsyncGenerator[str, None]:
     client = app.state.client
     try:
-        yield f"data: {json.dumps({'p': 20, 'm': '🔍 리뷰 데이터를 수집하고 있습니다...'})}\n\n"
+        yield f"data: {json.dumps({'p': 10, 'm': '🔍 리뷰 데이터를 수집하고 있습니다...'})}\n\n"
         context = await collect_reviews(product_name, client)
 
-        if not context:
-            raise Exception("데이터 수집 실패: 유효한 리뷰를 찾을 수 없습니다.")
+        if context:
+            yield f"data: {json.dumps({'p': 55, 'm': f'📄 리뷰 데이터 수집 완료 ({len(context):,}자) — AI 분석 시작...'})}\n\n"
+        else:
+            # 검색 실패해도 에러 내지 않고 AI 자체 지식으로 분석
+            yield f"data: {json.dumps({'p': 55, 'm': '⚠️ 실시간 수집 실패 — AI 학습 지식으로 분석합니다...'})}\n\n"
 
-        yield f"data: {json.dumps({'p': 60, 'm': '🧠 AI가 심층 분석 리포트를 작성 중입니다...'})}\n\n"
         prompt = build_prompt(product_name, context)
         final_answer, model_name = await call_ai_logic(client, prompt)
 
-        yield f"data: {json.dumps({'p': 100, 'm': f'✅ {model_name} 분석 완료', 'answer': final_answer})}\n\n"
+        source_note = "리뷰 기반" if context else "AI 추정 (실시간 수집 불가)"
+        yield f"data: {json.dumps({'p': 100, 'm': f'✅ {model_name} 분석 완료 [{source_note}]', 'answer': final_answer})}\n\n"
 
     except Exception as e:
         logger.error(f"Stream error: {e}")
