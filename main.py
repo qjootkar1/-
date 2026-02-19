@@ -36,9 +36,9 @@ MAX_CONCURRENT_FETCH  = 5
 RATE_LIMIT_PER_MINUTE = 10
 CACHE_TTL_SECONDS     = 3600
 
-REQUEST_TIMEOUT = httpx.Timeout(12.0, read=30.0, connect=10.0, pool=10.0)
+REQUEST_TIMEOUT = httpx.Timeout(12.0, read=35.0, connect=10.0, pool=10.0)
 
-# 공개 메타서치 인스턴스
+# 공개 인스턴스
 SEARXNG_INSTANCES = ["https://searx.tiekoetter.net", "https://searx.be", "https://priv.au", "https://search.sapti.me"]
 WHOOGLE_INSTANCES = ["https://whoogle.sdf.org", "https://whoogle.privacydev.net"]
 METAGER_ENDPOINT = "https://metager.org/meta/meta.ger3"
@@ -336,7 +336,7 @@ async def call_ai(client: httpx.AsyncClient, prompt: str) -> Tuple[str, str]:
 
     raise RuntimeError("AI 호출 실패")
 
-# ── SSE 스트리밍 ───────────────────────────────────────────────────
+# ── SSE 스트리밍 (무한 재연결 방지 버전) ─────────────────────────────
 async def analysis_stream(product: str) -> AsyncGenerator[str, None]:
     def emit(p: int, msg: str, **extra):
         return f"data: {json.dumps({'p': p, 'm': msg, **extra}, ensure_ascii=False)}\n\n"
@@ -350,12 +350,17 @@ async def analysis_stream(product: str) -> AsyncGenerator[str, None]:
             yield emit(100, "분석 완료", answer=cached)
             return
 
-        yield emit(5, "리뷰 검색 시작...")
+        # 연결 유지용 heartbeat
+        yield emit(5, "연결 확인 중...")
+        await asyncio.sleep(0.3)
+        yield emit(8, "리뷰 검색 준비...")
+        await asyncio.sleep(0.3)
         yield emit(10, "리뷰 수집 중...")
 
         context, stats = await collect_review_data(product, client)
 
-        yield emit(50, f"수집 완료 → {stats['raw_urls']}개 URL → {stats['fetched_pages']}개 페이지")
+        yield emit(48, f"수집 완료 → {stats['raw_urls']}개 URL → {stats['fetched_pages']}개 페이지")
+        await asyncio.sleep(0.4)
 
         yield emit(60, "AI 분석 시작...")
         prompt = build_prompt(product, context)
@@ -387,7 +392,11 @@ async def analyze(product: str = ""):
     return StreamingResponse(
         analysis_stream(clean),
         media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive"
+        }
     )
 
 @app.get("/health")
