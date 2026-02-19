@@ -3,69 +3,84 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="실제 사용자 리뷰를 AI가 분석하여 제품의 장단점을 한눈에 정리해드립니다.">
+  <!-- ★ 보안: Content Security Policy -->
+  <meta http-equiv="Content-Security-Policy"
+    content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:;">
   <title>AI 제품 분석기</title>
-  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+  <!-- marked: 마크다운 렌더러 -->
+  <script src="https://cdn.jsdelivr.net/npm/marked@9.1.6/marked.min.js" crossorigin="anonymous"></script>
+  <!-- ★ DOMPurify: XSS 방어 — marked 결과 정제 필수 -->
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.5/dist/purify.min.js" crossorigin="anonymous"></script>
+
   <style>
+    /* ══ 디자인 토큰 ══ */
     :root {
-      --bg: #f2f4f8;
-      --surface: #ffffff;
-      --surface2: #f8f9fc;
-      --border: #e2e6ed;
-      --border2: #d0d5de;
-      --primary: #2563eb;
-      --primary-hover: #1d4ed8;
-      --primary-light: #eff4ff;
-      --danger: #dc2626;
-      --danger-light: #fef2f2;
-      --text: #0f1117;
-      --text2: #4b5563;
-      --text3: #9ca3af;
-      --success: #16a34a;
-      --radius: 10px;
-      --shadow-sm: 0 1px 3px rgba(0,0,0,0.07), 0 1px 2px rgba(0,0,0,0.04);
-      --shadow: 0 4px 16px rgba(0,0,0,0.08), 0 1px 4px rgba(0,0,0,0.05);
-      --shadow-lg: 0 12px 40px rgba(0,0,0,0.10), 0 2px 8px rgba(0,0,0,0.06);
-      --font: 'Malgun Gothic', '맑은 고딕', -apple-system, 'Apple SD Gothic Neo', 'Nanum Gothic', sans-serif;
+      --bg:        #f2f4f8;
+      --surface:   #ffffff;
+      --surface2:  #f8f9fc;
+      --border:    #e2e6ed;
+      --border2:   #d0d5de;
+      --primary:   #2563eb;
+      --primary-h: #1d4ed8;
+      --primary-lt:#eff4ff;
+      --danger:    #dc2626;
+      --danger-lt: #fef2f2;
+      --warn:      #d97706;
+      --warn-lt:   #fffbeb;
+      --warn-bd:   #fde68a;
+      --success:   #16a34a;
+      --text:      #0f1117;
+      --text2:     #4b5563;
+      --text3:     #9ca3af;
+      --r: 10px;
+      --sh-sm: 0 1px 3px rgba(0,0,0,.07), 0 1px 2px rgba(0,0,0,.04);
+      --sh:    0 4px 16px rgba(0,0,0,.08), 0 1px 4px rgba(0,0,0,.05);
+      --sh-lg: 0 12px 40px rgba(0,0,0,.10), 0 2px 8px rgba(0,0,0,.06);
+      --font: 'Malgun Gothic','맑은 고딕',-apple-system,'Apple SD Gothic Neo','Nanum Gothic',sans-serif;
     }
     [data-theme="dark"] {
-      --bg: #0d1117;
-      --surface: #161b22;
-      --surface2: #21262d;
-      --border: #30363d;
-      --border2: #3d444d;
-      --primary: #3b82f6;
-      --primary-hover: #2563eb;
-      --primary-light: #1a2540;
-      --danger: #f87171;
-      --danger-light: #1f1214;
-      --text: #e6edf3;
-      --text2: #9198a1;
-      --text3: #545d68;
-      --success: #3fb950;
-      --shadow-sm: 0 1px 3px rgba(0,0,0,0.3);
-      --shadow: 0 4px 16px rgba(0,0,0,0.4);
-      --shadow-lg: 0 12px 40px rgba(0,0,0,0.5);
+      --bg:        #0d1117;
+      --surface:   #161b22;
+      --surface2:  #21262d;
+      --border:    #30363d;
+      --border2:   #3d444d;
+      --primary:   #3b82f6;
+      --primary-h: #2563eb;
+      --primary-lt:#1a2540;
+      --danger:    #f87171;
+      --danger-lt: #1f1214;
+      --warn:      #fbbf24;
+      --warn-lt:   #1c1506;
+      --warn-bd:   #78350f;
+      --success:   #3fb950;
+      --text:      #e6edf3;
+      --text2:     #9198a1;
+      --text3:     #545d68;
+      --sh-sm: 0 1px 3px rgba(0,0,0,.3);
+      --sh:    0 4px 16px rgba(0,0,0,.4);
+      --sh-lg: 0 12px 40px rgba(0,0,0,.5);
     }
 
+    /* ══ 기본 ══ */
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     html { scroll-behavior: smooth; }
-
     body {
       font-family: var(--font);
-      background: var(--bg);
-      color: var(--text);
+      background: var(--bg); color: var(--text);
       min-height: 100vh;
-      transition: background 0.3s, color 0.3s;
-      font-size: 14px;
-      line-height: 1.6;
+      transition: background .3s, color .3s;
+      font-size: 14px; line-height: 1.6;
     }
+    :focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 
-    /* ── 네비 ── */
+    /* ══ 네비 ══ */
     nav {
       position: sticky; top: 0; z-index: 100;
       background: var(--surface);
       border-bottom: 1px solid var(--border);
-      box-shadow: var(--shadow-sm);
+      box-shadow: var(--sh-sm);
     }
     .nav-inner {
       max-width: 780px; margin: 0 auto;
@@ -74,55 +89,50 @@
     }
     .nav-logo { display: flex; align-items: center; gap: 10px; }
     .nav-icon {
-      width: 32px; height: 32px;
-      background: var(--primary);
-      border-radius: 8px;
-      display: flex; align-items: center; justify-content: center;
-      color: white; font-size: 13px; font-weight: 800;
-      letter-spacing: -0.5px; flex-shrink: 0;
+      width: 32px; height: 32px; background: var(--primary);
+      border-radius: 8px; display: flex; align-items: center;
+      justify-content: center; color: #fff;
+      font-size: 13px; font-weight: 800; flex-shrink: 0;
     }
-    .nav-title { font-size: 16px; font-weight: 700; color: var(--text); letter-spacing: -0.3px; }
+    .nav-title { font-size: 16px; font-weight: 700; color: var(--text); }
     .nav-title span { color: var(--primary); }
     .nav-badge {
-      font-size: 10px; background: var(--primary-light);
-      color: var(--primary); padding: 2px 7px;
-      border-radius: 20px; font-weight: 600;
-      border: 1px solid rgba(37,99,235,0.3);
+      font-size: 10px; background: var(--primary-lt); color: var(--primary);
+      padding: 2px 7px; border-radius: 20px; font-weight: 600;
+      border: 1px solid rgba(37,99,235,.3);
     }
     .theme-toggle {
       width: 36px; height: 36px; border-radius: 8px;
       border: 1px solid var(--border); background: var(--surface2);
       cursor: pointer; display: flex; align-items: center;
-      justify-content: center; font-size: 17px;
-      transition: 0.15s; color: var(--text2);
+      justify-content: center; font-size: 17px; transition: .15s;
     }
     .theme-toggle:hover { background: var(--border); }
 
-    /* ── 메인 ── */
+    /* ══ 메인 ══ */
     main { max-width: 780px; margin: 0 auto; padding: 32px 20px 80px; }
 
-    /* ── 히어로 ── */
+    /* ══ 히어로 ══ */
     .hero { text-align: center; padding: 36px 0 32px; }
     .hero-badge {
       display: inline-flex; align-items: center; gap: 6px;
       font-size: 12px; color: var(--primary); font-weight: 600;
-      background: var(--primary-light); border: 1px solid rgba(37,99,235,0.3);
+      background: var(--primary-lt); border: 1px solid rgba(37,99,235,.3);
       border-radius: 20px; padding: 4px 12px; margin-bottom: 18px;
     }
     .hero-badge-dot { width: 6px; height: 6px; background: var(--primary); border-radius: 50%; }
     .hero h2 {
-      font-size: clamp(22px, 4vw, 32px);
-      font-weight: 800; color: var(--text);
-      letter-spacing: -0.8px; line-height: 1.3; margin-bottom: 12px;
+      font-size: clamp(22px,4vw,32px); font-weight: 800; color: var(--text);
+      letter-spacing: -.8px; line-height: 1.3; margin-bottom: 12px;
     }
     .hero h2 em { font-style: normal; color: var(--primary); }
     .hero p { font-size: 14px; color: var(--text2); line-height: 1.8; }
 
-    /* ── 검색 카드 ── */
+    /* ══ 검색 카드 ══ */
     .search-card {
       background: var(--surface); border: 1px solid var(--border);
       border-radius: 14px; padding: 22px 24px;
-      box-shadow: var(--shadow); margin-bottom: 14px;
+      box-shadow: var(--sh); margin-bottom: 14px;
     }
     .search-label {
       font-size: 12px; font-weight: 700; color: var(--text2);
@@ -132,37 +142,50 @@
     .search-row { display: flex; gap: 8px; }
     .input-wrap { flex: 1; position: relative; }
     .input-wrap::before {
-      content: '🔍'; position: absolute;
-      left: 12px; top: 50%; transform: translateY(-50%);
-      font-size: 14px; pointer-events: none;
+      content: '🔍'; position: absolute; left: 12px; top: 50%;
+      transform: translateY(-50%); font-size: 14px; pointer-events: none;
     }
+    /* ★ 글자 수 카운터 */
+    .char-counter {
+      position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
+      font-size: 11px; color: var(--text3); pointer-events: none; transition: color .2s;
+    }
+    .char-counter.warn { color: var(--warn); }
+    .char-counter.over { color: var(--danger); }
+
     input[type="text"] {
-      width: 100%; padding: 11px 14px 11px 38px;
-      border: 1.5px solid var(--border); border-radius: var(--radius);
+      width: 100%; padding: 11px 52px 11px 38px;
+      border: 1.5px solid var(--border); border-radius: var(--r);
       background: var(--surface2); color: var(--text);
       font-family: var(--font); font-size: 14px;
-      transition: 0.15s; outline: none;
+      transition: .15s; outline: none;
     }
-    input:focus { border-color: var(--primary); background: var(--surface); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+    input:focus { border-color: var(--primary); background: var(--surface); box-shadow: 0 0 0 3px rgba(37,99,235,.1); }
     input::placeholder { color: var(--text3); }
+    input[aria-invalid="true"] { border-color: var(--danger); }
 
     .btn-primary {
-      padding: 11px 22px; background: var(--primary);
-      color: white; border: none; border-radius: var(--radius);
-      font-family: var(--font); font-size: 14px; font-weight: 700;
-      cursor: pointer; transition: 0.15s; white-space: nowrap;
+      padding: 11px 22px; background: var(--primary); color: #fff;
+      border: none; border-radius: var(--r); font-family: var(--font);
+      font-size: 14px; font-weight: 700; cursor: pointer;
+      transition: .15s; white-space: nowrap;
       display: flex; align-items: center; gap: 6px;
     }
-    .btn-primary:hover:not(:disabled) { background: var(--primary-hover); transform: translateY(-1px); box-shadow: 0 4px 12px rgba(37,99,235,0.3); }
+    .btn-primary:hover:not(:disabled) { background: var(--primary-h); transform: translateY(-1px); box-shadow: 0 4px 12px rgba(37,99,235,.3); }
     .btn-primary:active:not(:disabled) { transform: none; }
-    .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-primary:disabled { opacity: .5; cursor: not-allowed; }
 
-    /* ── 히스토리 ── */
+    /* ══ 입력 에러 ══ */
+    .input-error {
+      font-size: 12px; color: var(--danger); margin-top: 7px;
+      display: none; align-items: center; gap: 5px;
+    }
+    .input-error.show { display: flex; }
+
+    /* ══ 히스토리 ══ */
     .history-row {
-      display: none; align-items: center;
-      gap: 6px; flex-wrap: wrap;
-      margin-top: 14px; padding-top: 14px;
-      border-top: 1px solid var(--border);
+      display: none; align-items: center; gap: 6px; flex-wrap: wrap;
+      margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border);
     }
     .history-row.show { display: flex; }
     .history-label { font-size: 11px; color: var(--text3); font-weight: 600; white-space: nowrap; }
@@ -170,32 +193,48 @@
       font-size: 12px; padding: 4px 11px;
       border: 1px solid var(--border2); border-radius: 20px;
       cursor: pointer; color: var(--text2); background: var(--surface2);
-      font-family: var(--font); transition: 0.15s;
+      font-family: var(--font); transition: .15s;
     }
-    .history-chip:hover { border-color: var(--primary); color: var(--primary); background: var(--primary-light); }
+    .history-chip:hover { border-color: var(--primary); color: var(--primary); background: var(--primary-lt); }
+    /* ★ 히스토리 전체 삭제 버튼 */
+    .history-clear {
+      margin-left: auto; font-size: 11px; color: var(--text3);
+      background: none; border: none; cursor: pointer;
+      padding: 2px 6px; border-radius: 4px;
+      transition: .15s; font-family: var(--font);
+    }
+    .history-clear:hover { color: var(--danger); background: var(--danger-lt); }
 
-    /* ── 에러 ── */
+    /* ══ AI 추정 배너 ══ */
+    .estimate-banner {
+      background: var(--warn-lt); border: 1px solid var(--warn-bd);
+      border-radius: 12px; padding: 12px 18px; margin-bottom: 14px;
+      display: none; align-items: center; gap: 10px;
+      font-size: 13px; color: var(--warn);
+    }
+    .estimate-banner.show { display: flex; }
+
+    /* ══ 에러 카드 ══ */
     .error-card {
-      background: var(--danger-light); border: 1px solid var(--danger);
-      border-radius: 12px; padding: 14px 18px;
-      margin-bottom: 14px; display: none;
-      align-items: center; gap: 10px;
+      background: var(--danger-lt); border: 1px solid var(--danger);
+      border-radius: 12px; padding: 14px 18px; margin-bottom: 14px;
+      display: none; align-items: center; gap: 10px;
       font-size: 13px; color: var(--danger);
     }
     .error-card.show { display: flex; }
     .error-text { flex: 1; font-weight: 500; }
     .btn-retry {
-      padding: 6px 14px; background: var(--danger); color: white;
+      padding: 6px 14px; background: var(--danger); color: #fff;
       border: none; border-radius: 7px; font-family: var(--font);
       font-size: 12px; font-weight: 700; cursor: pointer; white-space: nowrap;
     }
-    .btn-retry:hover { opacity: 0.85; }
+    .btn-retry:hover { opacity: .85; }
 
-    /* ── 진행 카드 ── */
+    /* ══ 진행 카드 ══ */
     .progress-card {
       background: var(--surface); border: 1px solid var(--border);
       border-radius: 12px; padding: 18px 22px;
-      box-shadow: var(--shadow-sm); margin-bottom: 14px; display: none;
+      box-shadow: var(--sh-sm); margin-bottom: 14px; display: none;
     }
     .progress-card.show { display: block; }
     .progress-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 11px; }
@@ -203,7 +242,7 @@
     .spinner {
       width: 14px; height: 14px;
       border: 2px solid var(--border); border-top-color: var(--primary);
-      border-radius: 50%; animation: spin 0.7s linear infinite; flex-shrink: 0;
+      border-radius: 50%; animation: spin .7s linear infinite; flex-shrink: 0;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
     .progress-pct { font-size: 13px; font-weight: 700; color: var(--primary); }
@@ -211,29 +250,29 @@
     .progress-bar {
       height: 100%; width: 0%; border-radius: 3px;
       background: linear-gradient(90deg, var(--primary), #60a5fa);
-      transition: width 0.4s cubic-bezier(0.4,0,0.2,1);
+      transition: width .4s cubic-bezier(.4,0,.2,1);
     }
 
-    /* ── 스켈레톤 ── */
+    /* ══ 스켈레톤 ══ */
     .skeleton-card {
       background: var(--surface); border: 1px solid var(--border);
       border-radius: 14px; padding: 26px; margin-bottom: 14px; display: none;
     }
     .skeleton-card.show { display: block; }
     .skel {
-      height: 13px; border-radius: 6px;
+      height: 13px; border-radius: 6px; margin-bottom: 10px;
       background: linear-gradient(90deg, var(--border) 25%, var(--surface2) 50%, var(--border) 75%);
-      background-size: 300% 100%; animation: shimmer 1.6s infinite; margin-bottom: 10px;
+      background-size: 300% 100%; animation: shimmer 1.6s infinite;
     }
     .skel-h { height: 18px; margin-bottom: 16px; }
     @keyframes shimmer { 0%{background-position:200%} 100%{background-position:-200%} }
 
-    /* ── 결과 카드 ── */
+    /* ══ 결과 카드 ══ */
     .result-card {
       background: var(--surface); border: 1px solid var(--border);
       border-radius: 14px; overflow: hidden;
-      box-shadow: var(--shadow-lg); display: none;
-      animation: slideUp 0.4s cubic-bezier(0.16,1,0.3,1);
+      box-shadow: var(--sh-lg); display: none;
+      animation: slideUp .4s cubic-bezier(.16,1,.3,1);
     }
     .result-card.show { display: block; }
     @keyframes slideUp { from{opacity:0;transform:translateY(14px)} to{opacity:1;transform:none} }
@@ -247,131 +286,176 @@
     .result-dot {
       width: 8px; height: 8px; background: var(--success);
       border-radius: 50%; flex-shrink: 0;
-      box-shadow: 0 0 0 3px rgba(22,163,74,0.15);
+      box-shadow: 0 0 0 3px rgba(22,163,74,.15);
     }
+    .result-dot.warn { background: var(--warn); box-shadow: 0 0 0 3px rgba(217,119,6,.15); }
     .result-meta-info { min-width: 0; }
     .result-product { font-weight: 700; font-size: 14px; color: var(--text); display: block; }
     .result-sub { font-size: 11px; color: var(--text3); }
     .result-actions { display: flex; gap: 6px; flex-shrink: 0; }
     .btn-action {
-      padding: 6px 13px; border: 1px solid var(--border2);
-      border-radius: 7px; background: var(--surface);
-      color: var(--text2); font-family: var(--font);
+      padding: 6px 13px; border: 1px solid var(--border2); border-radius: 7px;
+      background: var(--surface); color: var(--text2); font-family: var(--font);
       font-size: 12px; font-weight: 600; cursor: pointer;
-      transition: 0.15s; display: flex; align-items: center; gap: 4px;
+      transition: .15s; display: flex; align-items: center; gap: 4px;
     }
-    .btn-action:hover { border-color: var(--primary); color: var(--primary); background: var(--primary-light); }
+    .btn-action:hover { border-color: var(--primary); color: var(--primary); background: var(--primary-lt); }
 
-    /* ── 결과 본문 ── */
+    /* ══ 결과 본문 마크다운 ══ */
     .result-body { padding: 26px 26px 30px; }
     .result-body h2 {
       font-size: 16px; font-weight: 800; color: var(--text);
       margin: 26px 0 10px; padding: 9px 14px;
       background: var(--surface2); border-left: 3.5px solid var(--primary);
-      border-radius: 0 6px 6px 0; letter-spacing: -0.3px;
+      border-radius: 0 6px 6px 0;
     }
     .result-body h2:first-child { margin-top: 0; }
-    .result-body h3 {
-      font-size: 14px; font-weight: 700; color: var(--text2);
-      margin: 16px 0 7px;
-    }
+    .result-body h3 { font-size: 14px; font-weight: 700; color: var(--text2); margin: 16px 0 7px; }
     .result-body p { font-size: 14px; color: var(--text); margin-bottom: 11px; line-height: 1.85; }
     .result-body ul, .result-body ol { padding-left: 18px; margin-bottom: 11px; }
     .result-body li { font-size: 14px; color: var(--text); margin-bottom: 5px; line-height: 1.75; }
     .result-body strong { color: var(--primary); font-weight: 700; }
+    .result-body em { font-style: italic; }
     .result-body code {
       font-size: 12px; background: var(--surface2); padding: 2px 6px;
       border-radius: 4px; border: 1px solid var(--border);
-      font-family: 'Consolas', 'Courier New', monospace;
+      font-family: 'Consolas','Courier New',monospace;
     }
     .result-body hr { border: none; border-top: 1px solid var(--border); margin: 18px 0; }
+    .result-body blockquote {
+      border-left: 3px solid var(--primary-lt); margin: 12px 0;
+      padding: 8px 14px; background: var(--surface2);
+      border-radius: 0 6px 6px 0; color: var(--text2); font-size: 13px;
+    }
+    /* ★ AI 점수 테이블 스타일 (필수 — 없으면 테이블이 뭉개짐) */
+    .result-body table {
+      width: 100%; border-collapse: collapse;
+      margin: 16px 0; font-size: 13px;
+      border: 1px solid var(--border); border-radius: 8px; overflow: hidden;
+    }
+    .result-body th {
+      background: var(--primary-lt); color: var(--primary);
+      font-weight: 700; padding: 10px 14px; text-align: left;
+      border-bottom: 1px solid var(--border);
+    }
+    .result-body td {
+      padding: 9px 14px; border-bottom: 1px solid var(--border); color: var(--text);
+    }
+    .result-body tr:last-child td { border-bottom: none; }
+    .result-body tr:nth-child(even) td { background: var(--surface2); }
+    .result-body tr:hover td { background: var(--primary-lt); transition: .15s; }
 
-    /* ── 토스트 ── */
+    /* ══ 토스트 ══ */
     .toast {
       position: fixed; bottom: 28px; left: 50%;
       transform: translateX(-50%) translateY(10px);
       background: #1f2937; color: #f9fafb;
       font-family: var(--font); font-size: 13px; font-weight: 600;
       padding: 11px 20px; border-radius: 10px;
-      box-shadow: var(--shadow-lg); opacity: 0;
-      pointer-events: none; transition: 0.25s; z-index: 999; white-space: nowrap;
+      box-shadow: var(--sh-lg); opacity: 0;
+      pointer-events: none; transition: .25s; z-index: 999; white-space: nowrap;
     }
     [data-theme="dark"] .toast { background: #e6edf3; color: #0d1117; }
     .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
+    /* ══ 반응형 ══ */
     @media (max-width: 500px) {
       .search-row { flex-direction: column; }
       .result-header { flex-direction: column; align-items: flex-start; }
       .result-actions { width: 100%; }
       .btn-action { flex: 1; justify-content: center; }
       .result-body { padding: 18px 16px 22px; }
+      .result-body table { font-size: 12px; }
+      .result-body th, .result-body td { padding: 7px 10px; }
       main { padding: 20px 14px 60px; }
     }
   </style>
 </head>
 <body>
 
-<nav>
+<nav role="navigation" aria-label="메인 네비게이션">
   <div class="nav-inner">
     <div class="nav-logo">
-      <div class="nav-icon">AI</div>
+      <div class="nav-icon" aria-hidden="true">AI</div>
       <span class="nav-title">AI <span>제품 분석기</span></span>
       <span class="nav-badge">Beta</span>
     </div>
-    <button class="theme-toggle" id="themeBtn" onclick="toggleTheme()">🌙</button>
+    <button class="theme-toggle" id="themeBtn" onclick="toggleTheme()" aria-label="테마 전환">🌙</button>
   </div>
 </nav>
 
 <main>
-  <div class="hero">
-    <div class="hero-badge">
-      <div class="hero-badge-dot"></div>
-      실시간 리뷰 분석 엔진
+  <!-- 히어로 -->
+  <section class="hero" aria-label="서비스 소개">
+    <div class="hero-badge" aria-hidden="true">
+      <div class="hero-badge-dot"></div>실시간 리뷰 분석 엔진
     </div>
     <h2>궁금한 제품,<br><em>AI가 분석해 드립니다</em></h2>
     <p>실제 사용자 리뷰를 수집·분석하여<br>장단점을 한눈에 정리해 드립니다.</p>
-  </div>
+  </section>
 
-  <div class="search-card">
-    <div class="search-label">
-      <div class="search-label-bar"></div>
-      분석할 제품 입력
+  <!-- 검색 카드 -->
+  <section class="search-card" aria-label="제품 검색">
+    <div class="search-label" aria-hidden="true">
+      <div class="search-label-bar"></div>분석할 제품 입력
     </div>
     <div class="search-row">
       <div class="input-wrap">
         <input type="text" id="productInput"
           placeholder="예: 갤럭시 S25, 다이슨 에어랩, 맥북 프로 M4…"
-          onkeydown="if(event.key==='Enter') runAnalysis()">
+          maxlength="100"
+          autocomplete="off"
+          autocorrect="off"
+          spellcheck="false"
+          aria-label="제품명 입력"
+          aria-describedby="inputError"
+          onkeydown="handleKeydown(event)"
+          oninput="handleInput(event)">
+        <span class="char-counter" id="charCounter" aria-live="polite"></span>
       </div>
-      <button class="btn-primary" id="analyzeBtn" onclick="runAnalysis()">
+      <button class="btn-primary" id="analyzeBtn" onclick="runAnalysis()" aria-label="분석 시작">
         분석 시작 →
       </button>
     </div>
-    <div class="history-row" id="historyRow">
-      <span class="history-label">최근 검색</span>
+    <div class="input-error" id="inputError" role="alert" aria-live="assertive">
+      <span id="inputErrorMsg"></span>
     </div>
+    <div class="history-row" id="historyRow" aria-label="최근 검색 기록">
+      <span class="history-label" aria-hidden="true">최근 검색</span>
+      <button class="history-clear" id="historyClearBtn" onclick="clearHistory()" aria-label="검색 기록 전체 삭제">전체 삭제</button>
+    </div>
+  </section>
+
+  <!-- AI 추정 배너 -->
+  <div class="estimate-banner" id="estimateBanner" role="status" aria-live="polite">
+    <span aria-hidden="true">⚠️</span>
+    <span>실시간 리뷰 수집에 실패하여 AI 학습 데이터 기반으로 분석한 결과입니다. 실제와 다를 수 있습니다.</span>
   </div>
 
-  <div class="error-card" id="errorCard">
-    <span>⚠️</span>
-    <span class="error-text" id="errorMsg">서버 연결에 실패했습니다.</span>
-    <button class="btn-retry" onclick="runAnalysis()">재시도</button>
+  <!-- 에러 카드 -->
+  <div class="error-card" id="errorCard" role="alert" aria-live="assertive">
+    <span aria-hidden="true">⚠️</span>
+    <span class="error-text" id="errorMsg">오류가 발생했습니다.</span>
+    <button class="btn-retry" onclick="retryAnalysis()" aria-label="다시 시도">재시도</button>
   </div>
 
-  <div class="progress-card" id="progressCard">
+  <!-- 진행 카드 -->
+  <div class="progress-card" id="progressCard" role="status" aria-live="polite">
     <div class="progress-top">
       <div class="progress-status">
-        <div class="spinner"></div>
+        <div class="spinner" aria-hidden="true"></div>
         <span id="statusMsg">분석 준비 중...</span>
       </div>
       <span class="progress-pct" id="pctText">0%</span>
     </div>
-    <div class="progress-track">
+    <div class="progress-track" role="progressbar"
+         aria-valuenow="0" aria-valuemin="0" aria-valuemax="100" id="progressTrack">
       <div class="progress-bar" id="progressBar"></div>
     </div>
   </div>
 
-  <div class="skeleton-card" id="skeletonCard">
+  <!-- 스켈레톤 -->
+  <div class="skeleton-card" id="skeletonCard" aria-hidden="true">
     <div class="skel skel-h" style="width:40%"></div>
     <div class="skel" style="width:100%"></div>
     <div class="skel" style="width:86%"></div>
@@ -383,142 +467,360 @@
     <div class="skel" style="width:65%"></div>
   </div>
 
-  <div class="result-card" id="resultCard">
+  <!-- 결과 카드 -->
+  <div class="result-card" id="resultCard" aria-label="분석 결과">
     <div class="result-header">
       <div class="result-meta">
-        <div class="result-dot"></div>
+        <div class="result-dot" id="resultDot"></div>
         <div class="result-meta-info">
           <span class="result-product" id="resultName"></span>
-          <span class="result-sub">분석 완료</span>
+          <span class="result-sub" id="resultSub">분석 완료</span>
         </div>
       </div>
       <div class="result-actions">
-        <button class="btn-action" onclick="copyResult()">📋 복사</button>
-        <button class="btn-action" onclick="downloadResult()">⬇ 저장</button>
+        <button class="btn-action" onclick="copyResult()" aria-label="결과 복사">📋 복사</button>
+        <button class="btn-action" onclick="downloadResult()" aria-label="결과 저장">⬇ 저장</button>
       </div>
     </div>
     <div class="result-body" id="resultBody"></div>
   </div>
 </main>
 
-<div class="toast" id="toast"></div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
 
 <script>
-  let isAnalyzing = false, currentProduct = '', currentMarkdown = '', retryCount = 0;
-  const MAX_RETRY = 3, HIST_KEY = 'aiAnalyzerHistory';
+'use strict';
 
-  (function() {
-    const t = localStorage.getItem('theme') || 'light';
-    document.documentElement.dataset.theme = t;
-    document.getElementById('themeBtn').textContent = t === 'dark' ? '☀️' : '🌙';
-  })();
+/* ── 상수 ── */
+const MAX_INPUT   = 100;
+const MAX_RETRY   = 3;
+const SSE_TIMEOUT = 120_000; // 2분
+const HIST_KEY    = 'aiAnalyzerHistory';
 
-  function toggleTheme() {
-    const html = document.documentElement;
-    const next = html.dataset.theme === 'dark' ? 'light' : 'dark';
-    html.dataset.theme = next;
-    document.getElementById('themeBtn').textContent = next === 'dark' ? '☀️' : '🌙';
-    localStorage.setItem('theme', next);
-  }
+/* ── 상태 ── */
+let isAnalyzing    = false;
+let currentProduct = '';
+let currentMarkdown= '';
+let retryCount     = 0;
+let isEstimate     = false;
+let _sse           = null;   // 현재 EventSource
+let _sseTimer      = null;   // 타임아웃 타이머
+let _toastTimer    = null;
 
-  function toast(msg) {
-    const el = document.getElementById('toast');
-    el.textContent = msg;
-    el.classList.add('show');
-    setTimeout(() => el.classList.remove('show'), 2400);
-  }
+/* ── marked 설정 ──
+   gfm: true → 테이블 렌더링 지원
+   headerIds: false → id 속성 미생성으로 XSS 경로 차단 */
+marked.setOptions({ breaks: true, gfm: true, headerIds: false, mangle: false });
 
-  function getHistory() { try { return JSON.parse(localStorage.getItem(HIST_KEY)) || []; } catch { return []; } }
-  function addHistory(name) {
-    let h = getHistory().filter(x => x !== name);
-    h.unshift(name);
-    localStorage.setItem(HIST_KEY, JSON.stringify(h.slice(0, 5)));
-    renderHistory();
-  }
-  function renderHistory() {
-    const h = getHistory(), row = document.getElementById('historyRow');
-    if (!h.length) { row.classList.remove('show'); return; }
-    row.classList.add('show');
-    while (row.children.length > 1) row.removeChild(row.lastChild);
-    h.forEach(name => {
-      const c = document.createElement('button');
-      c.className = 'history-chip'; c.textContent = name;
-      c.onclick = () => { document.getElementById('productInput').value = name; runAnalysis(); };
-      row.appendChild(c);
+/* ★ 안전한 마크다운 렌더링 (DOMPurify XSS 정제) */
+function safeMarkdown(md) {
+  const raw = marked.parse(md || '');
+  if (typeof DOMPurify !== 'undefined') {
+    return DOMPurify.sanitize(raw, {
+      ALLOWED_TAGS: ['h1','h2','h3','h4','h5','h6','p','br','hr',
+                     'ul','ol','li','strong','em','code','pre',
+                     'blockquote','table','thead','tbody','tr','th','td',
+                     'a','span'],
+      ALLOWED_ATTR: ['href','target','rel','class'],
+      FORCE_HTTPS: true,
     });
   }
+  // DOMPurify 로드 실패 시 스크립트 제거 폴백
+  console.warn('DOMPurify 미로드 — 폴백 사용');
+  return raw.replace(/<script[\s\S]*?<\/script>/gi, '')
+            .replace(/javascript:/gi, '')
+            .replace(/on\w+\s*=/gi, '');
+}
+
+/* ── 테마 ── */
+(function() {
+  const t = localStorage.getItem('theme') || 'light';
+  document.documentElement.dataset.theme = t;
+  document.getElementById('themeBtn').textContent = t === 'dark' ? '☀️' : '🌙';
+})();
+
+function toggleTheme() {
+  const html = document.documentElement;
+  const next = html.dataset.theme === 'dark' ? 'light' : 'dark';
+  html.dataset.theme = next;
+  document.getElementById('themeBtn').textContent = next === 'dark' ? '☀️' : '🌙';
+  localStorage.setItem('theme', next);
+}
+
+/* ── 토스트 ── */
+function showToast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(() => el.classList.remove('show'), 2400);
+}
+
+/* ── 입력 처리 ── */
+function handleKeydown(e) {
+  // ★ isComposing: 한글 조합 중 Enter 방지
+  if (e.key === 'Enter' && !e.isComposing) {
+    e.preventDefault();
+    runAnalysis();
+  }
+}
+
+function handleInput(e) {
+  const len = e.target.value.length;
+  const counter = document.getElementById('charCounter');
+  counter.textContent = len > 0 ? `${len}/${MAX_INPUT}` : '';
+  counter.className = 'char-counter' + (len >= MAX_INPUT ? ' over' : len > 80 ? ' warn' : '');
+  hideInputError();
+  e.target.removeAttribute('aria-invalid');
+}
+
+/* ── 입력 검증 ── */
+function validateInput(name) {
+  if (!name) { showInputError('제품명을 입력해주세요.'); return false; }
+  if (name.length > MAX_INPUT) { showInputError(`${MAX_INPUT}자 이하로 입력해주세요.`); return false; }
+  const blocked = ['<script', 'javascript:', 'data:', '--'];
+  if (blocked.some(b => name.toLowerCase().includes(b))) {
+    showInputError('유효하지 않은 입력입니다.');
+    return false;
+  }
+  return true;
+}
+
+function showInputError(msg) {
+  document.getElementById('productInput').setAttribute('aria-invalid', 'true');
+  document.getElementById('inputErrorMsg').textContent = msg;
+  document.getElementById('inputError').classList.add('show');
+}
+function hideInputError() {
+  document.getElementById('inputError').classList.remove('show');
+}
+
+/* ── 히스토리 ── */
+function getHistory() {
+  try { return JSON.parse(localStorage.getItem(HIST_KEY)) || []; } catch { return []; }
+}
+function addHistory(name) {
+  let h = getHistory().filter(x => x !== name);
+  h.unshift(name);
+  localStorage.setItem(HIST_KEY, JSON.stringify(h.slice(0, 5)));
   renderHistory();
+}
+function clearHistory() {
+  localStorage.removeItem(HIST_KEY);
+  renderHistory();
+  showToast('검색 기록이 삭제되었습니다.');
+}
+function renderHistory() {
+  const h = getHistory();
+  const row = document.getElementById('historyRow');
+  if (!h.length) { row.classList.remove('show'); return; }
+  row.classList.add('show');
+  // 기존 칩만 제거 (label·clear 버튼 보존)
+  row.querySelectorAll('.history-chip').forEach(el => el.remove());
+  const clearBtn = document.getElementById('historyClearBtn');
+  h.forEach(name => {
+    const chip = document.createElement('button');
+    chip.className = 'history-chip';
+    chip.textContent = name; // ★ textContent — XSS 안전
+    chip.setAttribute('aria-label', `${name} 다시 분석`);
+    chip.addEventListener('click', () => {
+      document.getElementById('productInput').value = name;
+      runAnalysis();
+    });
+    row.insertBefore(chip, clearBtn);
+  });
+}
+renderHistory();
 
-  function setProgress(p, msg) {
-    document.getElementById('progressBar').style.width = p + '%';
-    document.getElementById('pctText').textContent = p + '%';
-    if (msg) document.getElementById('statusMsg').textContent = msg;
-  }
-  function showError(msg) { document.getElementById('errorMsg').textContent = msg; document.getElementById('errorCard').classList.add('show'); }
-  function hideError() { document.getElementById('errorCard').classList.remove('show'); }
-  function resetUI() {
-    isAnalyzing = false;
-    document.getElementById('analyzeBtn').disabled = false;
-    document.getElementById('progressCard').classList.remove('show');
-    document.getElementById('skeletonCard').classList.remove('show');
-  }
+/* ── 진행도 ── */
+function setProgress(p, msg) {
+  // ★ p=-1(에러)이 와도 진행바 오염 방지
+  const safe = Math.max(0, Math.min(100, p));
+  document.getElementById('progressBar').style.width = safe + '%';
+  document.getElementById('pctText').textContent = safe + '%';
+  document.getElementById('progressTrack').setAttribute('aria-valuenow', safe);
+  if (msg) document.getElementById('statusMsg').textContent = msg;
+}
 
-  function runAnalysis() {
-    const name = document.getElementById('productInput').value.trim();
-    if (!name || isAnalyzing) return;
-    hideError(); isAnalyzing = true; currentProduct = name; retryCount = 0;
-    document.getElementById('analyzeBtn').disabled = true;
-    document.getElementById('resultCard').classList.remove('show');
-    document.getElementById('progressCard').classList.add('show');
-    document.getElementById('skeletonCard').classList.add('show');
-    setProgress(0, '분석 준비 중...');
-    connectSSE(name);
-  }
+/* ── 에러 ── */
+function showError(msg) {
+  document.getElementById('errorMsg').textContent = msg;
+  document.getElementById('errorCard').classList.add('show');
+}
+function hideError() { document.getElementById('errorCard').classList.remove('show'); }
 
-  function connectSSE(name) {
-    const src = new EventSource(`/analyze?product=${encodeURIComponent(name)}`);
-    src.onmessage = function(e) {
-      let data; try { data = JSON.parse(e.data); } catch { return; }
-      if (data.p !== undefined) setProgress(data.p, data.m);
-      if (data.p === 100 && data.answer) {
-        src.close(); currentMarkdown = data.answer; addHistory(name);
-        setTimeout(() => {
-          document.getElementById('skeletonCard').classList.remove('show');
-          document.getElementById('progressCard').classList.remove('show');
-          document.getElementById('resultName').textContent = name;
-          document.getElementById('resultBody').innerHTML = marked.parse(data.answer);
-          document.getElementById('resultCard').classList.add('show');
-          document.getElementById('resultCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
-          resetUI();
-        }, 500);
-      }
-      if (data.error) { src.close(); handleError(data.m || '분석 중 오류가 발생했습니다.', name); }
-    };
-    src.onerror = function() { src.close(); handleError('서버 연결에 실패했습니다.', name); };
-  }
+/* ── UI 리셋 ── */
+function resetUI() {
+  isAnalyzing = false;
+  document.getElementById('analyzeBtn').disabled = false;
+  document.getElementById('progressCard').classList.remove('show');
+  document.getElementById('skeletonCard').classList.remove('show');
+}
 
-  function handleError(msg, name) {
-    if (retryCount < MAX_RETRY) {
-      retryCount++;
-      document.getElementById('statusMsg').textContent = `재연결 중... (${retryCount}/${MAX_RETRY})`;
-      setTimeout(() => connectSSE(name), 2000);
-    } else {
-      resetUI(); document.getElementById('skeletonCard').classList.remove('show');
-      showError(msg + ` — 재시도 ${MAX_RETRY}회 실패`);
+/* ★ SSE 정리 (연결 누수 방지) */
+function closeSSE() {
+  if (_sse) { _sse.close(); _sse = null; }
+  clearTimeout(_sseTimer);
+  _sseTimer = null;
+}
+
+/* ── 분석 실행 ── */
+function runAnalysis() {
+  const name = document.getElementById('productInput').value.trim();
+  if (isAnalyzing) return;
+  if (!validateInput(name)) return;
+
+  closeSSE();
+  hideError();
+  hideInputError();
+  isAnalyzing    = true;
+  isEstimate     = false;
+  currentProduct = name;
+  retryCount     = 0;
+
+  document.getElementById('analyzeBtn').disabled = true;
+  document.getElementById('resultCard').classList.remove('show');
+  document.getElementById('estimateBanner').classList.remove('show');
+  document.getElementById('progressCard').classList.add('show');
+  document.getElementById('skeletonCard').classList.add('show');
+  setProgress(0, '분석 준비 중...');
+  connectSSE(name);
+}
+
+function retryAnalysis() { hideError(); runAnalysis(); }
+
+/* ── SSE 연결 ── */
+function connectSSE(name) {
+  // ★ 타임아웃: 2분 내 완료 없으면 강제 종료
+  _sseTimer = setTimeout(() => {
+    closeSSE();
+    handleError('서버 응답 시간이 초과되었습니다. (2분)', name);
+  }, SSE_TIMEOUT);
+
+  const src = new EventSource('/analyze?product=' + encodeURIComponent(name));
+  _sse = src;
+
+  src.onmessage = function(e) {
+    let data;
+    try { data = JSON.parse(e.data); } catch { return; }
+
+    // 진행도 (p >= 0 일 때만 업데이트)
+    if (typeof data.p === 'number' && data.p >= 0) {
+      setProgress(data.p, data.m);
+    } else if (data.m) {
+      document.getElementById('statusMsg').textContent = data.m;
     }
-  }
 
-  function copyResult() {
-    if (!currentMarkdown) return;
-    navigator.clipboard.writeText(currentMarkdown).then(() => toast('✓ 클립보드에 복사되었습니다')).catch(() => toast('복사에 실패했습니다'));
+    // AI 추정 감지
+    if (data.m && data.m.includes('AI 추정')) isEstimate = true;
+
+    // 완료
+    if (data.p === 100 && data.answer) {
+      clearTimeout(_sseTimer);
+      src.close(); _sse = null;
+      currentMarkdown = data.answer;
+      addHistory(name);
+      renderResult(name, data.answer, data.m || '');
+      return;
+    }
+
+    // 에러
+    if (data.error) {
+      clearTimeout(_sseTimer);
+      src.close(); _sse = null;
+      handleError(data.m || '분석 중 오류가 발생했습니다.', name);
+    }
+  };
+
+  // ★ onerror: CLOSED 상태는 무시 (이미 정리된 연결)
+  src.onerror = function() {
+    if (src.readyState === EventSource.CLOSED) return;
+    clearTimeout(_sseTimer);
+    src.close(); _sse = null;
+    handleError('서버 연결에 실패했습니다.', name);
+  };
+}
+
+/* ── 에러 & 지수 백오프 재시도 ── */
+function handleError(msg, name) {
+  if (retryCount < MAX_RETRY) {
+    retryCount++;
+    const delay = retryCount * 2000; // 2s → 4s → 6s
+    document.getElementById('statusMsg').textContent =
+      `재연결 중... (${retryCount}/${MAX_RETRY}) — ${delay/1000}초 후 재시도`;
+    setTimeout(() => { if (isAnalyzing) connectSSE(name); }, delay);
+  } else {
+    resetUI();
+    document.getElementById('skeletonCard').classList.remove('show');
+    showError(msg + ` (재시도 ${MAX_RETRY}회 실패)`);
   }
-  function downloadResult() {
-    if (!currentMarkdown) return;
+}
+
+/* ── 결과 렌더링 ── */
+function renderResult(name, markdown, statusMsg) {
+  setTimeout(() => {
+    document.getElementById('skeletonCard').classList.remove('show');
+    document.getElementById('progressCard').classList.remove('show');
+
+    // ★ DOMPurify 정제 후 innerHTML
+    document.getElementById('resultBody').innerHTML = safeMarkdown(markdown);
+
+    // ★ textContent로 XSS 안전하게 제품명 표시
+    document.getElementById('resultName').textContent = name;
+
+    const est = isEstimate || statusMsg.includes('AI 추정');
+    if (est) {
+      document.getElementById('resultDot').className = 'result-dot warn';
+      document.getElementById('resultSub').textContent = 'AI 추정 분석 완료';
+      document.getElementById('estimateBanner').classList.add('show');
+    } else {
+      document.getElementById('resultDot').className = 'result-dot';
+      document.getElementById('resultSub').textContent = '리뷰 기반 분석 완료';
+    }
+
+    document.getElementById('resultCard').classList.add('show');
+    document.getElementById('resultCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    resetUI();
+  }, 500);
+}
+
+/* ── 복사 (execCommand 폴백 포함) ── */
+function copyResult() {
+  if (!currentMarkdown) return;
+  if (!navigator.clipboard) {
+    // HTTP 환경 or 구형 브라우저 폴백
+    const ta = Object.assign(document.createElement('textarea'), {
+      value: currentMarkdown, style: 'position:fixed;opacity:0'
+    });
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    showToast('✓ 복사되었습니다');
+    return;
+  }
+  navigator.clipboard.writeText(currentMarkdown)
+    .then(() => showToast('✓ 클립보드에 복사되었습니다'))
+    .catch(() => showToast('복사에 실패했습니다. 직접 선택해 주세요.'));
+}
+
+/* ── 다운로드 (파일명 새니타이즈) ── */
+function downloadResult() {
+  if (!currentMarkdown) return;
+  try {
+    const safe = currentProduct.replace(/[\\/:*?"<>|]/g, '_').slice(0, 50);
     const a = document.createElement('a');
-    a.href = URL.createObjectURL(new Blob([currentMarkdown], { type: 'text/markdown' }));
-    a.download = `${currentProduct}_분석리포트.md`; a.click();
-    URL.revokeObjectURL(a.href); toast('⬇ 파일 저장을 시작합니다');
-  }
+    a.href = URL.createObjectURL(new Blob([currentMarkdown], { type: 'text/markdown;charset=utf-8' }));
+    a.download = `${safe}_분석리포트.md`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+    showToast('⬇ 파일 저장을 시작합니다');
+  } catch { showToast('파일 저장에 실패했습니다.'); }
+}
+
+/* ★ 페이지 이탈 시 SSE 정리 (연결 누수 방지) */
+window.addEventListener('pagehide', closeSSE);
+window.addEventListener('beforeunload', closeSSE);
 </script>
 </body>
 </html>
