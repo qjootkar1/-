@@ -1,30 +1,32 @@
 import os
 import json
+import time
+import hashlib
 import asyncio
 import logging
+from collections import defaultdict
 from typing import AsyncGenerator
 
 import httpx
-from fastapi import FastAPI
-from fastapi.responses import StreamingResponse, HTMLResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import StreamingResponse, HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from bs4 import BeautifulSoup
 from duckduckgo_search import DDGS
 from contextlib import asynccontextmanager
 
-# --- 로깅 설정 ---
-logging.basicConfig(level=logging.INFO)
+# ── 로깅 ──────────────────────────────────────────────────────
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
 logger = logging.getLogger("analyzer")
 
-# API 키 설정
-GEMINI_KEY = os.getenv("GEMINI_API_KEY")
-GROQ_KEY = os.getenv("GROQ_API_KEY")
+# ── API 키 ────────────────────────────────────────────────────
+GEMINI_KEY          = os.getenv("GEMINI_API_KEY")
+GROQ_KEY            = os.getenv("GROQ_API_KEY")
+SERPER_KEY          = os.getenv("SERPER_API_KEY")
 
-# 페이지당 최대 수집 글자 수
-MAX_CHARS_PER_PAGE = 2000
-MAX_TOTAL_CHARS = 12000
-
-# --- HTML 페이지 (프론트엔드 내장) ---
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="ko" data-theme="light">
 <head>
@@ -439,213 +441,403 @@ HTML_PAGE = """<!DOCTYPE html>
 </body>
 </html>"""
 
+# ═══════════════════════════════════════════════════════════════
+# 설정 & 상수
+# ═══════════════════════════════════════════════════════════════
+MAX_CHARS_PER_PAGE  = 2500    # 페이지당 최대 수집 글자
+MAX_TOTAL_CHARS     = 15000   # 전체 컨텍스트 최대 글자
+MAX_FETCH_WORKERS   = 5       # 동시 페이지 수집 수
+MAX_PRODUCT_LEN     = 100     # 제품명 최대 길이
+RATE_LIMIT_PER_MIN  = 10      # IP당 분당 최대 요청 수
+CACHE_TTL_SEC       = 3600    # 캐시 유효시간 (1시간)
 
+# 인메모리 저장소
+_rate_store: dict = defaultdict(list)   # {ip: [timestamp, ...]}
+_cache: dict      = {}                  # {md5key: (timestamp, result)}
+
+
+# ═══════════════════════════════════════════════════════════════
+# Lifespan — httpx 클라이언트 풀 관리
+# ═══════════════════════════════════════════════════════════════
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    }
     app.state.client = httpx.AsyncClient(
-        timeout=httpx.Timeout(20.0, read=50.0),
-        headers=headers,
+        timeout=httpx.Timeout(connect=10.0, read=40.0, write=10.0, pool=5.0),
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/122.0.0.0 Safari/537.36"
+            ),
+            "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        },
         follow_redirects=True,
-        limits=httpx.Limits(max_keepalive_connections=5, max_connections=10)
+        limits=httpx.Limits(
+            max_keepalive_connections=10,
+            max_connections=20,
+            keepalive_expiry=30,
+        ),
+        http2=False,
     )
+    logger.info("✅ httpx 클라이언트 초기화")
     yield
     await app.state.client.aclose()
+    logger.info("🔒 httpx 클라이언트 종료")
 
 
-app = FastAPI(lifespan=lifespan)
+# ═══════════════════════════════════════════════════════════════
+# FastAPI 앱
+# ═══════════════════════════════════════════════════════════════
+app = FastAPI(
+    lifespan=lifespan,
+    docs_url=None,      # 보안: Swagger 비공개
+    redoc_url=None,
+    openapi_url=None,
+)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"]
+    allow_methods=["GET", "POST"],
+    allow_headers=["*"],
 )
 
 
-# ── 루트: HTML 서빙 (핵심 수정) ──────────────────────────────────────
-@app.get("/")
-async def root():
-    return HTMLResponse(content=HTML_PAGE)
+# ═══════════════════════════════════════════════════════════════
+# 미들웨어: IP 기반 레이트 리밋
+# ═══════════════════════════════════════════════════════════════
+@app.middleware("http")
+async def rate_limit_middleware(request: Request, call_next):
+    if request.url.path == "/analyze":
+        ip = (request.client.host if request.client else "unknown")
+        now = time.time()
+        window_start = now - 60
+        _rate_store[ip] = [t for t in _rate_store[ip] if t > window_start]
+        if len(_rate_store[ip]) >= RATE_LIMIT_PER_MIN:
+            logger.warning(f"레이트 리밋 초과: {ip}")
+            return JSONResponse(
+                {"error": True, "m": "요청이 너무 많습니다. 잠시 후 다시 시도하세요.", "p": -1},
+                status_code=429,
+            )
+        _rate_store[ip].append(now)
+    return await call_next(request)
 
 
-# --- 웹 수집 로직 ---
+# ═══════════════════════════════════════════════════════════════
+# 보안: 입력값 검증 & 새니타이즈
+# ═══════════════════════════════════════════════════════════════
+def sanitize_product_name(name: str) -> str:
+    name = name.strip()
+    if not name:
+        raise HTTPException(400, "제품명을 입력해주세요.")
+    if len(name) > MAX_PRODUCT_LEN:
+        raise HTTPException(400, f"제품명은 {MAX_PRODUCT_LEN}자 이하로 입력해주세요.")
+    # 제어문자·null 바이트 제거
+    name = "".join(c for c in name if ord(c) >= 32 and c != "\x00")
+    # 스크립트 인젝션 패턴 차단
+    for bad in ["<script", "javascript:", "data:", "--", ";"]:
+        if bad.lower() in name.lower():
+            raise HTTPException(400, "유효하지 않은 제품명입니다.")
+    return name[:MAX_PRODUCT_LEN]
+
+
+# ═══════════════════════════════════════════════════════════════
+# 캐시 (메모리, 최대 100개)
+# ═══════════════════════════════════════════════════════════════
+def _cache_key(name: str) -> str:
+    return hashlib.md5(name.strip().lower().encode()).hexdigest()
+
+def get_cache(name: str) -> str | None:
+    key = _cache_key(name)
+    if key in _cache:
+        ts, val = _cache[key]
+        if time.time() - ts < CACHE_TTL_SEC:
+            logger.info(f"캐시 HIT: {name}")
+            return val
+        del _cache[key]
+    return None
+
+def set_cache(name: str, val: str):
+    if len(_cache) >= 100:
+        oldest = min(_cache, key=lambda k: _cache[k][0])
+        del _cache[oldest]
+    _cache[_cache_key(name)] = (time.time(), val)
+
+
+# ═══════════════════════════════════════════════════════════════
+# 웹 페이지 수집
+# ═══════════════════════════════════════════════════════════════
 async def fetch_page(client: httpx.AsyncClient, url: str) -> str:
+    """단일 URL 텍스트 추출. 실패 시 빈 문자열 반환."""
     try:
-        r = await client.get(url)
+        r = await client.get(url, timeout=15)
         if r.status_code != 200:
-            logger.warning(f"fetch_page non-200 [{r.status_code}]: {url}")
             return ""
         soup = BeautifulSoup(r.text, "html.parser")
-        for s in soup(['script', 'style', 'header', 'footer', 'nav', 'form', 'aside']):
-            s.decompose()
-        text = soup.get_text(" ", strip=True)
+        for tag in soup(["script", "style", "header", "footer", "nav",
+                          "form", "aside", "iframe", "noscript", "svg"]):
+            tag.decompose()
+        # 연속 공백 정리
+        text = " ".join(soup.get_text(" ", strip=True).split())
         return text[:MAX_CHARS_PER_PAGE]
     except Exception as e:
-        logger.error(f"fetch_page error [{url}]: {e}")
+        logger.debug(f"fetch_page 실패 [{url[:60]}]: {e}")
         return ""
 
 
-async def search_ddgs(query: str) -> list[str]:
-    """DDGS로 검색 — 여러 방법 순차 시도"""
-    # 방법 1: 기본 text 검색
+# ═══════════════════════════════════════════════════════════════
+# Serper API — Google 검색
+# ═══════════════════════════════════════════════════════════════
+async def search_serper(query: str, client: httpx.AsyncClient) -> list[str]:
+    """Serper.dev API로 Google 검색 결과 URL 반환."""
+    if not SERPER_KEY:
+        logger.warning("SERPER_API_KEY 미설정")
+        return []
     try:
-        with DDGS() as ddgs:
-            results = await asyncio.to_thread(
-                list, ddgs.text(query, max_results=6)
-            )
-            urls = [r.get("href") for r in results if r and r.get("href")]
-            if urls:
-                logger.info(f"DDGS text OK: {len(urls)} urls")
-                return urls
+        r = await client.post(
+            "https://google.serper.dev/search",
+            headers={"X-API-KEY": SERPER_KEY, "Content-Type": "application/json"},
+            json={"q": query, "gl": "kr", "hl": "ko", "num": 8},
+            timeout=15,
+        )
+        r.raise_for_status()
+        data = r.json()
+        urls = [item["link"] for item in data.get("organic", []) if item.get("link")]
+        logger.info(f"Serper OK: {len(urls)}개 URL")
+        return urls
+    except httpx.HTTPStatusError as e:
+        logger.error(f"Serper HTTP 오류 {e.response.status_code}: {e.response.text[:200]}")
     except Exception as e:
-        logger.warning(f"DDGS text failed: {e}")
-
-    # 방법 2: backend="lite" 시도
-    try:
-        with DDGS() as ddgs:
-            results = await asyncio.to_thread(
-                list, ddgs.text(query, max_results=6, backend="lite")
-            )
-            urls = [r.get("href") for r in results if r and r.get("href")]
-            if urls:
-                logger.info(f"DDGS lite OK: {len(urls)} urls")
-                return urls
-    except Exception as e:
-        logger.warning(f"DDGS lite failed: {e}")
-
-    # 방법 3: 다른 키워드로 재시도
-    try:
-        alt_query = query.replace("실사용 후기 단점", "review pros cons")
-        with DDGS() as ddgs:
-            results = await asyncio.to_thread(
-                list, ddgs.text(alt_query, max_results=6)
-            )
-            urls = [r.get("href") for r in results if r and r.get("href")]
-            if urls:
-                logger.info(f"DDGS alt OK: {len(urls)} urls")
-                return urls
-    except Exception as e:
-        logger.warning(f"DDGS alt failed: {e}")
-
+        logger.error(f"Serper 오류: {e}")
     return []
 
 
-async def search_google_scrape(query: str, client: httpx.AsyncClient) -> list[str]:
-    """Google 검색 결과 직접 스크래핑 (DDGS 실패 시 폴백)"""
-    try:
-        encoded = query.replace(" ", "+")
-        url = f"https://www.google.com/search?q={encoded}&num=8&hl=ko"
-        r = await client.get(url, headers={
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-            "Accept-Language": "ko-KR,ko;q=0.9"
-        })
-        soup = BeautifulSoup(r.text, "html.parser")
-        urls = []
-        for a in soup.select("a[href]"):
-            href = a.get("href", "")
-            if href.startswith("/url?q="):
-                actual = href.split("/url?q=")[1].split("&")[0]
-                if actual.startswith("http") and "google.com" not in actual:
-                    urls.append(actual)
-        logger.info(f"Google scrape OK: {len(urls)} urls")
-        return urls[:6]
-    except Exception as e:
-        logger.warning(f"Google scrape failed: {e}")
-        return []
+# ═══════════════════════════════════════════════════════════════
+# DuckDuckGo 검색 — 올바른 async 패턴
+# ═══════════════════════════════════════════════════════════════
+
+def _ddgs_sync(query: str, max_results: int = 6) -> list[str]:
+    """
+    DDGS를 완전히 동기·스레드 내에서 실행.
+
+    핵심 원칙:
+      1) DDGS 인스턴스를 스레드 안에서 생성 — 이벤트 루프 스레드와 분리
+      2) 컨텍스트 매니저(with) 미사용 — 교차 스레드 __exit__ 문제 방지
+      3) backend 파라미터 없음 — v6에서 완전 제거됨, 넣으면 TypeError
+      4) text() 결과를 list()로 강제 소비 — 제너레이터 지연 평가 방지
+    """
+    ddgs = DDGS(timeout=20)
+    results = list(ddgs.text(query, max_results=max_results))
+    return [r.get("href", "") for r in results if r.get("href")]
 
 
+async def search_ddgs(query_ko: str, query_en: str) -> list[str]:
+    """
+    DuckDuckGo 검색.
+    - 한국어 쿼리 먼저, 실패 시 영어 쿼리 폴백
+    - 레이트리밋 감지 시 추가 대기 후 재시도
+    - 예외는 내부에서 처리, 항상 list 반환
+    """
+    queries = [
+        (query_ko, "KO"),
+        (query_en, "EN"),
+    ]
+
+    for idx, (query, label) in enumerate(queries):
+        if idx > 0:
+            # 쿼리 전환 전 대기 (레이트리밋 방지)
+            await asyncio.sleep(1.5)
+        try:
+            urls = await asyncio.to_thread(_ddgs_sync, query, 6)
+            if urls:
+                logger.info(f"DDGS({label}) OK: {len(urls)}개 URL")
+                return urls
+            logger.warning(f"DDGS({label}) 결과 없음: {query[:60]}")
+        except Exception as e:
+            err_lower = str(e).lower()
+            # 레이트리밋 / 202 응답 감지 (버전별로 표현 다름)
+            is_ratelimit = any(k in err_lower for k in
+                               ("ratelimit", "rate limit", "202", "blocked", "forbidden"))
+            if is_ratelimit:
+                logger.warning(f"DDGS({label}) 레이트리밋: {e} — 3초 대기 후 재시도")
+                await asyncio.sleep(3)
+                # 레이트리밋이면 같은 쿼리 한 번 더 시도
+                try:
+                    urls = await asyncio.to_thread(_ddgs_sync, query, 4)
+                    if urls:
+                        logger.info(f"DDGS({label}) 재시도 성공: {len(urls)}개 URL")
+                        return urls
+                except Exception as e2:
+                    logger.warning(f"DDGS({label}) 재시도 실패: {e2}")
+            else:
+                logger.warning(f"DDGS({label}) 오류: {type(e).__name__}: {e}")
+
+    logger.warning("DDGS 모든 시도 실패")
+    return []
+
+
+# ═══════════════════════════════════════════════════════════════
+# 통합 리뷰 수집 (Serper + DDGS)
+# ═══════════════════════════════════════════════════════════════
 async def collect_reviews(product_name: str, client: httpx.AsyncClient) -> str:
-    query = f"{product_name} 실사용 후기 단점"
+    query_ko = f"{product_name} 실사용 후기 장단점"
+    query_en = f"{product_name} review pros cons"
 
-    # 1. DDGS 시도
-    urls = await search_ddgs(query)
+    # Serper와 DDGS 병렬 실행
+    # DDGS는 한국어·영어 쿼리를 내부에서 순차 처리
+    serper_task = search_serper(query_ko, client)
+    ddgs_task   = search_ddgs(query_ko, query_en)
 
-    # 2. DDGS 실패 → Google 스크래핑 폴백
+    results = await asyncio.gather(
+        serper_task, ddgs_task,
+        return_exceptions=True,
+    )
+    serper_urls: list[str] = results[0] if isinstance(results[0], list) else []
+    ddgs_urls:   list[str] = results[1] if isinstance(results[1], list) else []
+
+    if isinstance(results[0], Exception):
+        logger.error(f"Serper 예외: {results[0]}")
+    if isinstance(results[1], Exception):
+        logger.error(f"DDGS 예외: {results[1]}")
+
+    # URL 중복 제거 — Serper 결과 우선
+    seen: set[str] = set()
+    urls: list[str] = []
+    for u in serper_urls + ddgs_urls:
+        if u and u not in seen:
+            seen.add(u)
+            urls.append(u)
+
+    logger.info(
+        f"검색 결과 — Serper: {len(serper_urls)}, DDGS: {len(ddgs_urls)}, "
+        f"합산 URL: {len(urls)}"
+    )
+
     if not urls:
-        logger.warning("DDGS 완전 실패 → Google 스크래핑 시도")
-        urls = await search_google_scrape(query, client)
-
-    # 3. 검색 자체가 완전 실패해도 빈 문자열 반환 (AI가 자체 지식으로 분석)
-    if not urls:
-        logger.warning("모든 검색 실패 — AI 자체 지식으로 분석 진행")
+        logger.warning("모든 검색 실패 — AI 자체 지식으로 분석")
         return ""
 
-    tasks = [fetch_page(client, u) for u in urls]
-    pages = await asyncio.gather(*tasks, return_exceptions=True)
-    valid_pages = [p for p in pages if isinstance(p, str) and p]
+    # 세마포어로 동시 페이지 요청 수 제한
+    sem = asyncio.Semaphore(MAX_FETCH_WORKERS)
 
-    collected = []
-    total = 0
-    for page in valid_pages:
-        if total + len(page) > MAX_TOTAL_CHARS:
-            remaining = MAX_TOTAL_CHARS - total
-            if remaining > 0:
-                collected.append(page[:remaining])
+    async def _fetch(url: str) -> str:
+        async with sem:
+            return await fetch_page(client, url)
+
+    pages = await asyncio.gather(
+        *[_fetch(u) for u in urls[:8]],
+        return_exceptions=True,
+    )
+    page_texts = [p for p in pages if isinstance(p, str) and p.strip()]
+
+    if not page_texts:
+        logger.warning("페이지 수집 모두 실패 — AI 자체 지식으로 분석")
+        return ""
+
+    # 전체 최대 글자수 제한
+    collected, total = [], 0
+    for part in page_texts:
+        remaining = MAX_TOTAL_CHARS - total
+        if remaining <= 0:
             break
-        collected.append(page)
-        total += len(page)
+        collected.append(part[:remaining])
+        total += len(part[:remaining])
 
+    logger.info(f"최종 수집: {total:,}자 ({len(page_texts)}개 페이지)")
     return "\n\n".join(collected)
 
 
-# --- 프롬프트 빌더 ---
+# ═══════════════════════════════════════════════════════════════
+# 프롬프트 빌더
+# ═══════════════════════════════════════════════════════════════
 def build_prompt(product_name: str, context: str) -> str:
     if context.strip():
-        data_section = f"아래는 실제 수집된 리뷰/후기 데이터입니다. 이를 최우선으로 활용하라.\n\n{context}"
-        rule = f'수집된 데이터를 기반으로 분석하되, 데이터에 없는 내용은 "확인되지 않음"으로 표기하라.'
+        data_section = (
+            "아래는 실제 수집된 리뷰/후기/커뮤니티 데이터입니다. "
+            "이를 최우선으로 활용하고, 데이터에 없는 내용은 '확인되지 않음'으로 표기하라.\n\n"
+            + context
+        )
     else:
-        data_section = "⚠️ 실시간 리뷰 수집에 실패했습니다. AI의 사전 학습 지식을 바탕으로 분석하라. 이 경우 각 항목 앞에 '[AI 추정]' 태그를 붙여라."
-        rule = "학습 데이터 기반으로 최대한 정확하게 분석하되, 불확실한 내용에는 '[AI 추정]' 태그를 반드시 붙여라."
+        data_section = (
+            "⚠️ 실시간 리뷰 수집에 실패했습니다. "
+            "AI 학습 지식을 바탕으로 분석하되, 각 항목에 반드시 [AI 추정] 태그를 붙여라."
+        )
 
-    return f"""
-# 역할
-너는 전문 제품 분석 리서처다. 한국어로 상세하고 구조적인 분석 리포트를 작성한다.
+    return f"""당신은 전문 제품 분석 리서처입니다. 한국어로 상세하고 구조적인 분석 리포트를 작성하세요.
 
-# 🔴 절대 규칙
-- 분석 대상: "{product_name}" 만 분석하라. (다른 모델/세대 혼용 금지)
-- {rule}
+## 분석 대상
+- 제품명: {product_name}
+- 규칙: 이 제품만 분석. 다른 세대·모델 혼용 금지.
 
-# 📊 분석 항목 (마크다운 형식으로 작성)
+## 출력 형식 (마크다운)
+
 ## 1. 핵심 요약
+(2~3줄 요약)
+
 ## 2. 주요 특징
-## 3. 장점 상세
-## 4. 단점 상세
-## 5. 사용자 감정 분석
+(핵심 스펙·특징 불릿)
+
+## 3. 장점
+(구체적 근거와 함께 서술)
+
+## 4. 단점
+(구체적 근거와 함께 서술)
+
+## 5. 사용자 반응 분석
+(긍정/부정 비율, 주요 키워드)
+
 ## 6. 점수 평가
-- 성능: X/10
-- 디자인: X/10
-- 내구성: X/10
-- 편의성: X/10
-- 가성비: X/10
-- **전체 평균: X/10**
+| 항목 | 점수 |
+|------|------|
+| 성능 | X/10 |
+| 디자인 | X/10 |
+| 내구성 | X/10 |
+| 편의성 | X/10 |
+| 가성비 | X/10 |
+| **종합** | **X/10** |
+
 ## 7. 추천 대상 / 비추천 대상
+
 ## 8. 종합 결론
 
-# 데이터
-{data_section}
-"""
+---
+
+## 데이터 출처
+{data_section}"""
 
 
-async def call_ai_logic(client: httpx.AsyncClient, prompt: str):
-    # 1. Gemini 우선 시도
+# ═══════════════════════════════════════════════════════════════
+# AI 호출 (Gemini → Groq 폴백)
+# ═══════════════════════════════════════════════════════════════
+async def call_ai(client: httpx.AsyncClient, prompt: str) -> tuple[str, str]:
+    # 1순위: Gemini 1.5 Flash
     if GEMINI_KEY:
         try:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}"
             r = await client.post(
-                url,
-                json={"contents": [{"parts": [{"text": prompt}]}]},
-                timeout=50
+                f"https://generativelanguage.googleapis.com/v1beta/models/"
+                f"gemini-1.5-flash:generateContent?key={GEMINI_KEY}",
+                json={
+                    "contents": [{"parts": [{"text": prompt}]}],
+                    "generationConfig": {
+                        "temperature": 0.3,
+                        "maxOutputTokens": 4096,
+                    },
+                },
+                timeout=60,
             )
-            if r.status_code == 200:
-                return r.json()['candidates'][0]['content']['parts'][0]['text'], "Gemini"
-            else:
-                logger.warning(f"Gemini non-200: {r.status_code} / {r.text[:200]}")
+            r.raise_for_status()
+            text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
+            logger.info("✅ Gemini 응답 성공")
+            return text, "Gemini"
+        except httpx.HTTPStatusError as e:
+            logger.warning(f"Gemini HTTP 오류 {e.response.status_code}: {e.response.text[:300]}")
+        except (KeyError, IndexError) as e:
+            logger.error(f"Gemini 응답 파싱 오류: {e}")
         except Exception as e:
-            logger.error(f"Gemini error: {e}")
+            logger.error(f"Gemini 오류: {e}")
 
-    # 2. Groq 폴백
+    # 2순위: Groq Llama3-70B
     if GROQ_KEY:
         try:
             r = await client.post(
@@ -653,51 +845,109 @@ async def call_ai_logic(client: httpx.AsyncClient, prompt: str):
                 headers={"Authorization": f"Bearer {GROQ_KEY}"},
                 json={
                     "model": "llama3-70b-8192",
-                    "messages": [{"role": "user", "content": prompt}]
+                    "messages": [
+                        {
+                            "role": "system",
+                            "content": "당신은 전문 제품 분석 리서처입니다. 반드시 한국어로 답변하세요.",
+                        },
+                        {"role": "user", "content": prompt},
+                    ],
+                    "temperature": 0.3,
+                    "max_tokens": 4000,
                 },
-                timeout=50
+                timeout=60,
             )
-            if r.status_code == 200:
-                return r.json()['choices'][0]['message']['content'], "Groq"
-            else:
-                logger.warning(f"Groq non-200: {r.status_code} / {r.text[:200]}")
+            r.raise_for_status()
+            text = r.json()["choices"][0]["message"]["content"]
+            logger.info("✅ Groq 응답 성공")
+            return text, "Groq"
+        except httpx.HTTPStatusError as e:
+            logger.warning(f"Groq HTTP 오류 {e.response.status_code}: {e.response.text[:300]}")
+        except (KeyError, IndexError) as e:
+            logger.error(f"Groq 응답 파싱 오류: {e}")
         except Exception as e:
-            logger.error(f"Groq error: {e}")
+            logger.error(f"Groq 오류: {e}")
 
-    raise Exception("AI 응답을 가져올 수 없습니다.")
+    raise RuntimeError("사용 가능한 AI API가 없거나 모든 호출에 실패했습니다.")
 
 
-# --- 스트리밍 엔드포인트 ---
-async def final_analysis_stream(product_name: str) -> AsyncGenerator[str, None]:
-    client = app.state.client
+# ═══════════════════════════════════════════════════════════════
+# SSE 스트리밍 제너레이터
+# ═══════════════════════════════════════════════════════════════
+async def analysis_stream(product_name: str) -> AsyncGenerator[str, None]:
+    def emit(p: int, m: str, **extra) -> str:
+        payload = {"p": p, "m": m, **extra}
+        return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+    client: httpx.AsyncClient = app.state.client
+
     try:
-        yield f"data: {json.dumps({'p': 10, 'm': '🔍 리뷰 데이터를 수집하고 있습니다...'})}\n\n"
+        # 캐시 확인
+        cached = get_cache(product_name)
+        if cached:
+            yield emit(30, "⚡ 이전 분석 결과를 불러오는 중...")
+            await asyncio.sleep(0.4)
+            yield emit(100, "✅ 캐시 결과 로드 완료", answer=cached)
+            return
+
+        # 리뷰 수집
+        yield emit(10, "🔍 리뷰 데이터를 수집하고 있습니다...")
         context = await collect_reviews(product_name, client)
 
         if context:
-            yield f"data: {json.dumps({'p': 55, 'm': f'📄 리뷰 데이터 수집 완료 ({len(context):,}자) — AI 분석 시작...'})}\n\n"
+            yield emit(55, f"📄 수집 완료 ({len(context):,}자) — AI 분석 중...")
         else:
-            # 검색 실패해도 에러 내지 않고 AI 자체 지식으로 분석
-            yield f"data: {json.dumps({'p': 55, 'm': '⚠️ 실시간 수집 실패 — AI 학습 지식으로 분석합니다...'})}\n\n"
+            yield emit(55, "⚠️ 실시간 수집 실패 — AI 학습 지식으로 분석합니다...")
 
+        # AI 분석
         prompt = build_prompt(product_name, context)
-        final_answer, model_name = await call_ai_logic(client, prompt)
+        answer, model = await call_ai(client, prompt)
 
-        source_note = "리뷰 기반" if context else "AI 추정 (실시간 수집 불가)"
-        yield f"data: {json.dumps({'p': 100, 'm': f'✅ {model_name} 분석 완료 [{source_note}]', 'answer': final_answer})}\n\n"
+        # 캐시 저장 (리뷰 기반 결과만)
+        if context:
+            set_cache(product_name, answer)
 
+        source = "리뷰 기반" if context else "AI 추정"
+        yield emit(100, f"✅ {model} 분석 완료 [{source}]", answer=answer)
+
+    except RuntimeError as e:
+        logger.error(f"AI 호출 실패: {e}")
+        yield emit(-1, str(e), error=True)
     except Exception as e:
-        logger.error(f"Stream error: {e}")
-        yield f"data: {json.dumps({'p': -1, 'm': f'오류: {str(e)}', 'error': True})}\n\n"
+        logger.error(f"Stream 예외: {e}", exc_info=True)
+        yield emit(-1, "서버 내부 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.", error=True)
+
+
+# ═══════════════════════════════════════════════════════════════
+# 라우트
+# ═══════════════════════════════════════════════════════════════
+@app.get("/")
+async def root():
+    return HTMLResponse(content=HTML_PAGE)
 
 
 @app.get("/analyze")
-async def analyze(product: str):
+async def analyze(request: Request, product: str = ""):
+    clean = sanitize_product_name(product)
     return StreamingResponse(
-        final_analysis_stream(product),
+        analysis_stream(clean),
         media_type="text/event-stream",
         headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",   # Render/Nginx 버퍼링 비활성화 (SSE 필수)
-        }
+            "Cache-Control":        "no-cache, no-store, must-revalidate",
+            "X-Accel-Buffering":    "no",           # Nginx 버퍼링 비활성 (SSE 필수)
+            "X-Content-Type-Options": "nosniff",
+            "X-Frame-Options":       "DENY",
+        },
     )
+
+
+@app.get("/health")
+async def health():
+    """헬스체크 — 배포 상태 확인용"""
+    return {
+        "status":     "ok",
+        "gemini":     bool(GEMINI_KEY),
+        "groq":       bool(GROQ_KEY),
+        "serper":     bool(SERPER_KEY),
+        "cache_size": len(_cache),
+    }
